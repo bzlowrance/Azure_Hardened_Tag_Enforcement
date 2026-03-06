@@ -1,0 +1,105 @@
+{
+  "properties": {
+    "displayName": "Enforce Owner tag with per-RG and per-resource overrides",
+    "description": "Enforces the Owner tag on all resources. Resolves the enforced value using: (1) a per-resource override map keyed by rgName/resourceName, (2) a per-resource-group override map keyed by RG name, (3) a default value. Tags are added if missing and corrected if they differ.",
+    "mode": "Indexed",
+    "metadata": {
+      "category": "Tags",
+      "version": "2.0.0"
+    },
+    "parameters": {
+      "defaultTagValue": {
+        "type": "String",
+        "metadata": {
+          "displayName": "Default Owner value",
+          "description": "The Owner tag value applied unless the resource or its RG has an override."
+        }
+      },
+      "tagValuesByResourceGroup": {
+        "type": "Object",
+        "metadata": {
+          "displayName": "Owner overrides by resource group",
+          "description": "Map of RG names to Owner values. Example: {\"rg-dev\": \"DevOpsTeam\"}"
+        },
+        "defaultValue": {}
+      },
+      "tagValuesByResource": {
+        "type": "Object",
+        "metadata": {
+          "displayName": "Owner overrides by specific resource",
+          "description": "Map of rgName/resourceName to Owner values. Takes priority over RG overrides. Example: {\"rg-dev/vm-special-01\": \"PlatformTeam\"}"
+        },
+        "defaultValue": {}
+      }
+    },
+    "policyRule": {
+      "if": {
+        "anyOf": [
+          {
+            "field": "tags['Owner']",
+            "exists": "false"
+          },
+          {
+            "allOf": [
+              {
+                "value": "[contains(parameters('tagValuesByResource'), concat(resourceGroup().name, '/', field('name')))]",
+                "equals": true
+              },
+              {
+                "field": "tags['Owner']",
+                "notEquals": "[parameters('tagValuesByResource')[concat(resourceGroup().name, '/', field('name'))]]"
+              }
+            ]
+          },
+          {
+            "allOf": [
+              {
+                "value": "[contains(parameters('tagValuesByResource'), concat(resourceGroup().name, '/', field('name')))]",
+                "equals": false
+              },
+              {
+                "value": "[contains(parameters('tagValuesByResourceGroup'), resourceGroup().name)]",
+                "equals": true
+              },
+              {
+                "field": "tags['Owner']",
+                "notEquals": "[parameters('tagValuesByResourceGroup')[resourceGroup().name]]"
+              }
+            ]
+          },
+          {
+            "allOf": [
+              {
+                "value": "[contains(parameters('tagValuesByResource'), concat(resourceGroup().name, '/', field('name')))]",
+                "equals": false
+              },
+              {
+                "value": "[contains(parameters('tagValuesByResourceGroup'), resourceGroup().name)]",
+                "equals": false
+              },
+              {
+                "field": "tags['Owner']",
+                "notEquals": "[parameters('defaultTagValue')]"
+              }
+            ]
+          }
+        ]
+      },
+      "then": {
+        "effect": "modify",
+        "details": {
+          "roleDefinitionIds": [
+            "/providers/Microsoft.Authorization/roleDefinitions/b24988ac-6180-42a0-ab88-20f7382dd24c"
+          ],
+          "operations": [
+            {
+              "operation": "addOrReplace",
+              "field": "tags['Owner']",
+              "value": "[if(contains(parameters('tagValuesByResource'), concat(resourceGroup().name, '/', field('name'))), parameters('tagValuesByResource')[concat(resourceGroup().name, '/', field('name'))], if(contains(parameters('tagValuesByResourceGroup'), resourceGroup().name), parameters('tagValuesByResourceGroup')[resourceGroup().name], parameters('defaultTagValue')))]"
+            }
+          ]
+        }
+      }
+    }
+  }
+}

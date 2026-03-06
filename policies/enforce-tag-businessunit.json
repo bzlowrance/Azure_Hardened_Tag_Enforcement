@@ -1,0 +1,105 @@
+{
+  "properties": {
+    "displayName": "Enforce BusinessUnit tag with per-RG and per-resource overrides",
+    "description": "Enforces the BusinessUnit tag on all resources. Resolves the enforced value using: (1) a per-resource override map keyed by rgName/resourceName, (2) a per-resource-group override map keyed by RG name, (3) a default value. Tags are added if missing and corrected if they differ.",
+    "mode": "Indexed",
+    "metadata": {
+      "category": "Tags",
+      "version": "2.0.0"
+    },
+    "parameters": {
+      "defaultTagValue": {
+        "type": "String",
+        "metadata": {
+          "displayName": "Default BusinessUnit value",
+          "description": "The BusinessUnit tag value applied unless the resource or its RG has an override."
+        }
+      },
+      "tagValuesByResourceGroup": {
+        "type": "Object",
+        "metadata": {
+          "displayName": "BusinessUnit overrides by resource group",
+          "description": "Map of RG names to BusinessUnit values. Example: {\"rg-dev\": \"Engineering\"}"
+        },
+        "defaultValue": {}
+      },
+      "tagValuesByResource": {
+        "type": "Object",
+        "metadata": {
+          "displayName": "BusinessUnit overrides by specific resource",
+          "description": "Map of rgName/resourceName to BusinessUnit values. Takes priority over RG overrides. Example: {\"rg-prod/vm-billing-01\": \"Finance\"}"
+        },
+        "defaultValue": {}
+      }
+    },
+    "policyRule": {
+      "if": {
+        "anyOf": [
+          {
+            "field": "tags['BusinessUnit']",
+            "exists": "false"
+          },
+          {
+            "allOf": [
+              {
+                "value": "[contains(parameters('tagValuesByResource'), concat(resourceGroup().name, '/', field('name')))]",
+                "equals": true
+              },
+              {
+                "field": "tags['BusinessUnit']",
+                "notEquals": "[parameters('tagValuesByResource')[concat(resourceGroup().name, '/', field('name'))]]"
+              }
+            ]
+          },
+          {
+            "allOf": [
+              {
+                "value": "[contains(parameters('tagValuesByResource'), concat(resourceGroup().name, '/', field('name')))]",
+                "equals": false
+              },
+              {
+                "value": "[contains(parameters('tagValuesByResourceGroup'), resourceGroup().name)]",
+                "equals": true
+              },
+              {
+                "field": "tags['BusinessUnit']",
+                "notEquals": "[parameters('tagValuesByResourceGroup')[resourceGroup().name]]"
+              }
+            ]
+          },
+          {
+            "allOf": [
+              {
+                "value": "[contains(parameters('tagValuesByResource'), concat(resourceGroup().name, '/', field('name')))]",
+                "equals": false
+              },
+              {
+                "value": "[contains(parameters('tagValuesByResourceGroup'), resourceGroup().name)]",
+                "equals": false
+              },
+              {
+                "field": "tags['BusinessUnit']",
+                "notEquals": "[parameters('defaultTagValue')]"
+              }
+            ]
+          }
+        ]
+      },
+      "then": {
+        "effect": "modify",
+        "details": {
+          "roleDefinitionIds": [
+            "/providers/Microsoft.Authorization/roleDefinitions/b24988ac-6180-42a0-ab88-20f7382dd24c"
+          ],
+          "operations": [
+            {
+              "operation": "addOrReplace",
+              "field": "tags['Environment']",
+              "value": "[if(contains(parameters('tagValuesByResource'), concat(resourceGroup().name, '/', field('name'))), parameters('tagValuesByResource')[concat(resourceGroup().name, '/', field('name'))], if(contains(parameters('tagValuesByResourceGroup'), resourceGroup().name), parameters('tagValuesByResourceGroup')[resourceGroup().name], parameters('defaultTagValue')))]"
+            }
+          ]
+        }
+      }
+    }
+  }
+}

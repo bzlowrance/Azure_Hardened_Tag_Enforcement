@@ -1,0 +1,36 @@
+{
+  "_comment": "Example assignment parameter values. Override priority: resource-level (rgName/resourceName) > RG-level (rgName) > default. Only add entries for scopes that differ from the default.",
+
+  "defaultOwner": "John Smith",
+  "ownerOverrides": {
+    "rg-dev": "Sarah Chen",
+    "rg-shared": "Mike Johnson",
+    "rg-data": "Emily Davis"
+  },
+  "ownerResourceOverrides": {
+    "rg-dev/vm-special-01": "Alex Rivera",
+    "rg-shared/sql-finance-db": "Rachel Kim"
+  },
+
+  "defaultCostCode": "CC-1000",
+  "costCodeOverrides": {
+    "rg-dev": "CC-2000-DEV",
+    "rg-staging": "CC-3000-STG",
+    "rg-data": "CC-4000-DATA"
+  },
+  "costCodeResourceOverrides": {
+    "rg-prod/vm-billing-01": "CC-9000-BILLING",
+    "rg-data/storage-archive": "CC-4500-ARCHIVE"
+  },
+
+  "defaultBusinessUnit": "Engineering",
+  "businessUnitOverrides": {
+    "rg-finance": "Finance",
+    "rg-marketing": "Marketing",
+    "rg-hr": "HumanResources"
+  },
+  "businessUnitResourceOverrides": {
+    "rg-prod/vm-billing-01": "Finance",
+    "rg-prod/app-recruiting": "HumanResources"
+  }
+}
