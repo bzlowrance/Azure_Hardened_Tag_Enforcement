@@ -79,7 +79,7 @@ Azure_Hardened_Tag_Enforcement/
 │   ├── Modify_Tags.ps1               # Apply non-compliant tags to test policy
 │   └── Destroy_Test_Infrastructure.ps1# Tear down all test resources
 ├── .env                               # Configuration for all scripts
-├── assignment-parameters.example.json # Example parameter values
+├── assignment-parameters.json         # Assignment parameter values
 ├── TestValidationReadme.md            # End-to-end test & validation guide
 └── README.md
 ```
@@ -130,7 +130,7 @@ For each file (`enforce-tag-owner.json`, `enforce-tag-costcode.json`, `enforce-t
 4. **Remediation** tab: check **Create a remediation task**
 5. Save
 
-See `assignment-parameters.example.json` for a complete example.
+See `assignment-parameters.json` for a complete example.
 
 ### Adding or changing an override
 
