@@ -63,11 +63,66 @@ $subscriptionName   = $envVars['STAGING_SUBSCRIPTION_NAME']
 $billingAccount     = $envVars['STAGING_BILLING_ACCOUNT_NAME']
 $billingProfile     = $envVars['STAGING_BILLING_PROFILE_NAME']
 $invoiceSection     = $envVars['STAGING_INVOICE_SECTION_NAME']
-$location           = $envVars['STAGING_LOCATION']
+$locationPref       = $envVars['STAGING_LOCATION']
 $workloadPreference = $envVars['STAGING_WORKLOAD']   # optional override: Production or DevTest
 $rgPrefix           = $envVars['STAGING_RG_PREFIX']
 $resourceGroups     = $envVars['STAGING_RESOURCE_GROUPS'] -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ }
 $paramsFilePath     = Join-Path $repoRoot $envVars['ASSIGNMENT_PARAMETERS_FILE']
+
+# ── Resolve Azure region ────────────────────────────────
+# Honours .env value if set; otherwise auto-detects the best region.
+function Resolve-AzureLocation {
+    param([string]$Preferred)
+
+    if ($Preferred -and $Preferred -ne 'AUTO') {
+        # Validate that the specified region actually exists
+        $valid = Get-AzLocation | Where-Object { $_.Location -eq $Preferred }
+        if ($valid) { return $Preferred }
+        Write-Warning "Configured location '$Preferred' not found — auto-detecting."
+    }
+
+    # Strategy: pick the closest region by looking at where the user already
+    # has resources, or fall back to a sensible default.
+    $allLocations = @(Get-AzLocation | Where-Object { $_.RegionType -eq 'Physical' -and $_.PhysicalLocation })
+
+    # 1) Check existing resource groups in the current subscription for a
+    #    frequently-used region (avoids cross-region latency surprises).
+    $existingRgs = @(Get-AzResourceGroup -ErrorAction SilentlyContinue)
+    if ($existingRgs.Count -gt 0) {
+        $topRegion = $existingRgs |
+            Group-Object Location |
+            Sort-Object Count -Descending |
+            Select-Object -First 1
+        if ($topRegion -and ($allLocations.Location -contains $topRegion.Name)) {
+            return $topRegion.Name
+        }
+    }
+
+    # 2) Infer from the tenant's home country via the Azure AD tenant.
+    #    Map common countries to their nearest Azure region.
+    $tenantId = (Get-AzContext).Tenant.Id
+    $tenantDetail = Get-AzTenant -TenantId $tenantId -ErrorAction SilentlyContinue
+    $countryCode = if ($tenantDetail -and $tenantDetail.PSObject.Properties['CountryCode']) { $tenantDetail.CountryCode } else { $null }
+
+    $regionMap = @{
+        'US' = 'eastus2';   'CA' = 'canadacentral'; 'GB' = 'uksouth'
+        'DE' = 'germanywestcentral'; 'FR' = 'francecentral'; 'AU' = 'australiaeast'
+        'JP' = 'japaneast'; 'IN' = 'centralindia';  'BR' = 'brazilsouth'
+        'KR' = 'koreacentral'; 'SG' = 'southeastasia'; 'ZA' = 'southafricanorth'
+        'AE' = 'uaenorth';  'CH' = 'switzerlandnorth'; 'SE' = 'swedencentral'
+        'NO' = 'norwayeast'; 'NL' = 'westeurope';    'IE' = 'northeurope'
+    }
+
+    if ($countryCode -and $regionMap.ContainsKey($countryCode)) {
+        $mapped = $regionMap[$countryCode]
+        if ($allLocations.Location -contains $mapped) { return $mapped }
+    }
+
+    # 3) Fallback: eastus2 (large, broadly available, cost-effective)
+    return 'eastus2'
+}
+
+$location = Resolve-AzureLocation -Preferred $locationPref
 
 Write-Host "═══════════════════════════════════════════════════════" -ForegroundColor Cyan
 Write-Host " Stage Test Infrastructure" -ForegroundColor Cyan

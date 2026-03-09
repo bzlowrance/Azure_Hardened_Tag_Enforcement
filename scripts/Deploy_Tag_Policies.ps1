@@ -52,10 +52,56 @@ $INITIATIVE_NAME    = $envVars['INITIATIVE_NAME']
 $ASSIGNMENT_NAME    = $envVars['ASSIGNMENT_NAME']
 $ASSIGNMENT_DISPLAY = $envVars['ASSIGNMENT_DISPLAY_NAME']
 $PARAMS_FILE        = $envVars['ASSIGNMENT_PARAMETERS_FILE']
-$LOCATION           = $envVars['ASSIGNMENT_LOCATION']
+$locationPref       = $envVars['ASSIGNMENT_LOCATION']
 $POLICY_OWNER       = $envVars['POLICY_DEF_OWNER']
 $POLICY_COSTCODE    = $envVars['POLICY_DEF_COSTCODE']
 $POLICY_BU          = $envVars['POLICY_DEF_BUSINESSUNIT']
+
+# ── Resolve Azure region ────────────────────────────────
+function Resolve-AzureLocation {
+    param([string]$Preferred)
+
+    if ($Preferred -and $Preferred -ne 'AUTO') {
+        $valid = Get-AzLocation | Where-Object { $_.Location -eq $Preferred }
+        if ($valid) { return $Preferred }
+        Write-Warning "Configured location '$Preferred' not found — auto-detecting."
+    }
+
+    $allLocations = @(Get-AzLocation | Where-Object { $_.RegionType -eq 'Physical' -and $_.PhysicalLocation })
+
+    $existingRgs = @(Get-AzResourceGroup -ErrorAction SilentlyContinue)
+    if ($existingRgs.Count -gt 0) {
+        $topRegion = $existingRgs |
+            Group-Object Location |
+            Sort-Object Count -Descending |
+            Select-Object -First 1
+        if ($topRegion -and ($allLocations.Location -contains $topRegion.Name)) {
+            return $topRegion.Name
+        }
+    }
+
+    $tenantId = (Get-AzContext).Tenant.Id
+    $tenantDetail = Get-AzTenant -TenantId $tenantId -ErrorAction SilentlyContinue
+    $countryCode = if ($tenantDetail -and $tenantDetail.PSObject.Properties['CountryCode']) { $tenantDetail.CountryCode } else { $null }
+
+    $regionMap = @{
+        'US' = 'eastus2';   'CA' = 'canadacentral'; 'GB' = 'uksouth'
+        'DE' = 'germanywestcentral'; 'FR' = 'francecentral'; 'AU' = 'australiaeast'
+        'JP' = 'japaneast'; 'IN' = 'centralindia';  'BR' = 'brazilsouth'
+        'KR' = 'koreacentral'; 'SG' = 'southeastasia'; 'ZA' = 'southafricanorth'
+        'AE' = 'uaenorth';  'CH' = 'switzerlandnorth'; 'SE' = 'swedencentral'
+        'NO' = 'norwayeast'; 'NL' = 'westeurope';    'IE' = 'northeurope'
+    }
+
+    if ($countryCode -and $regionMap.ContainsKey($countryCode)) {
+        $mapped = $regionMap[$countryCode]
+        if ($allLocations.Location -contains $mapped) { return $mapped }
+    }
+
+    return 'eastus2'
+}
+
+$LOCATION = Resolve-AzureLocation -Preferred $locationPref
 
 $mgScope         = "/providers/Microsoft.Management/managementGroups/$MG_ID"
 $policiesDir     = Join-Path $repoRoot 'policies'
