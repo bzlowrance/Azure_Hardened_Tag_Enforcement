@@ -30,6 +30,14 @@ param()
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+# ── Ensure required Az modules are available ────────────
+foreach ($mod in @('Az.Accounts', 'Az.Resources', 'Az.Storage', 'Az.Subscription')) {
+    if (-not (Get-Module -ListAvailable -Name $mod)) {
+        Write-Host "Installing missing module '$mod'..." -ForegroundColor Yellow
+        Install-Module -Name $mod -Scope CurrentUser -Force -AllowClobber
+    }
+}
+
 # ── Load .env ───────────────────────────────────────────
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $envFile  = Join-Path $repoRoot '.env'
