@@ -117,12 +117,10 @@ function Resolve-AzureLocation {
     return $available[0]
 }
 
-$location = Resolve-AzureLocation -Preferred $locationPref
-
 Write-Host "═══════════════════════════════════════════════════════" -ForegroundColor Cyan
 Write-Host " Stage Test Infrastructure" -ForegroundColor Cyan
 Write-Host " Management Group : $MG_ID" -ForegroundColor Cyan
-Write-Host " Location         : $location" -ForegroundColor Cyan
+Write-Host " Location         : $(if ($locationPref -and $locationPref -ne 'AUTO') { $locationPref } else { '(auto-detect)' })" -ForegroundColor Cyan
 Write-Host "═══════════════════════════════════════════════════════" -ForegroundColor Cyan
 
 # ── Step 1: Create management group ─────────────────────
@@ -327,7 +325,9 @@ if ($alreadyUnderMg) {
 
 # ── Set subscription context ───────────────────────────
 Set-AzContext -SubscriptionId $subscriptionId -Force | Out-Null
-
+# ── Resolve location now that we are in the correct subscription context ──
+$location = Resolve-AzureLocation -Preferred $locationPref
+Write-Host "`n  Resolved location: $location" -ForegroundColor Cyan
 # ── Parse assignment parameters for resource-level overrides ──
 $params = Get-Content $paramsFilePath -Raw | ConvertFrom-Json
 

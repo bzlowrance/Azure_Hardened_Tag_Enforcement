@@ -98,15 +98,24 @@ function Resolve-AzureLocation {
     return $available[0]
 }
 
-$LOCATION = Resolve-AzureLocation -Preferred $locationPref
-
 $mgScope         = "/providers/Microsoft.Management/managementGroups/$MG_ID"
 $policiesDir     = Join-Path $repoRoot 'policies'
 $paramsFilePath  = Join-Path $repoRoot $PARAMS_FILE
 
+# Ensure we are in the context of a subscription under the target MG so
+# Get-AzLocation returns the correct cloud-specific regions (gov, sovereign, etc.)
+$mgSubs = @(Get-AzManagementGroupSubscription -GroupId $MG_ID -ErrorAction SilentlyContinue)
+if ($mgSubs.Count -gt 0) {
+    $targetSubId = ($mgSubs[0].Id -split '/')[-1]
+    Set-AzContext -SubscriptionId $targetSubId -Force | Out-Null
+}
+
+$LOCATION = Resolve-AzureLocation -Preferred $locationPref
+
 Write-Host "═══════════════════════════════════════════════════" -ForegroundColor Cyan
 Write-Host " Tag Enforcement Deployment" -ForegroundColor Cyan
 Write-Host " Management Group : $MG_ID" -ForegroundColor Cyan
+Write-Host " Location         : $LOCATION" -ForegroundColor Cyan
 Write-Host " Initiative       : $INITIATIVE_NAME" -ForegroundColor Cyan
 Write-Host " Assignment       : $ASSIGNMENT_NAME" -ForegroundColor Cyan
 Write-Host "═══════════════════════════════════════════════════" -ForegroundColor Cyan
