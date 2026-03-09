@@ -371,6 +371,26 @@ foreach ($rg in $resourceGroups) {
 # ── Step 5: Create storage accounts ────────────────────
 Write-Host "`n[5/5] Creating storage accounts..." -ForegroundColor Yellow
 
+# Ensure the Microsoft.Storage resource provider is registered
+$storageProvider = Get-AzResourceProvider -ProviderNamespace Microsoft.Storage -ErrorAction SilentlyContinue
+if (-not $storageProvider -or $storageProvider[0].RegistrationState -ne 'Registered') {
+    Write-Host "  • Registering Microsoft.Storage resource provider..." -NoNewline
+    Register-AzResourceProvider -ProviderNamespace Microsoft.Storage | Out-Null
+    # Wait for registration to complete
+    $maxWait = 120
+    $elapsed = 0
+    while ($elapsed -lt $maxWait) {
+        $state = (Get-AzResourceProvider -ProviderNamespace Microsoft.Storage)[0].RegistrationState
+        if ($state -eq 'Registered') { break }
+        Start-Sleep -Seconds 5
+        $elapsed += 5
+    }
+    if ($state -ne 'Registered') {
+        Write-Error "Microsoft.Storage provider did not register within ${maxWait}s. Current state: $state"
+    }
+    Write-Host " registered" -ForegroundColor Green
+}
+
 # 5a: Baseline storage account per RG
 foreach ($rg in $resourceGroups) {
     $rgName = "$rgPrefix$rg"
