@@ -96,24 +96,24 @@ if ($subscriptionId -eq 'CREATE_NEW') {
         if (-not $billingAccount -or -not $billingProfile -or -not $invoiceSection) {
             Write-Host "  • Billing details not set in .env — auto-detecting from current account..." -ForegroundColor DarkGray
 
-            $billingAccounts = Get-AzBillingAccount -ErrorAction Stop
-            if (-not $billingAccounts -or $billingAccounts.Count -eq 0) {
+            $billingAccounts = @(Get-AzBillingAccount -ErrorAction Stop)
+            if ($billingAccounts.Count -eq 0) {
                 Write-Error "No billing accounts found for the current login. Set STAGING_BILLING_ACCOUNT_NAME, STAGING_BILLING_PROFILE_NAME, and STAGING_INVOICE_SECTION_NAME in .env manually."
             }
             $ba = $billingAccounts | Select-Object -First 1
             $billingAccount = $ba.Name
             Write-Host "    Billing account : $billingAccount" -ForegroundColor DarkGray
 
-            $profiles = Get-AzBillingProfile -BillingAccountName $billingAccount -ErrorAction Stop
-            if (-not $profiles -or $profiles.Count -eq 0) {
+            $profiles = @(Get-AzBillingProfile -BillingAccountName $billingAccount -ErrorAction Stop)
+            if ($profiles.Count -eq 0) {
                 Write-Error "No billing profiles found under account '$billingAccount'. Set billing fields in .env manually."
             }
             $bp = $profiles | Select-Object -First 1
             $billingProfile = $bp.Name
             Write-Host "    Billing profile : $billingProfile" -ForegroundColor DarkGray
 
-            $sections = Get-AzInvoiceSection -BillingAccountName $billingAccount -BillingProfileName $billingProfile -ErrorAction Stop
-            if (-not $sections -or $sections.Count -eq 0) {
+            $sections = @(Get-AzInvoiceSection -BillingAccountName $billingAccount -BillingProfileName $billingProfile -ErrorAction Stop)
+            if ($sections.Count -eq 0) {
                 Write-Error "No invoice sections found under profile '$billingProfile'. Set billing fields in .env manually."
             }
             $is = $sections | Select-Object -First 1
