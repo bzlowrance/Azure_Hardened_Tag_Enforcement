@@ -150,6 +150,32 @@ foreach ($def in $policyDefs) {
     Write-Host "OK" -ForegroundColor Green
 }
 
+# Wait for policy definitions to propagate before creating the initiative
+Write-Host "  Verifying policy definitions are available..." -ForegroundColor DarkGray
+$maxRetries = 12
+$retryDelay = 10
+$allFound = $false
+for ($attempt = 1; $attempt -le $maxRetries; $attempt++) {
+    $allFound = $true
+    foreach ($def in $policyDefs) {
+        $defId = "$mgScope/providers/Microsoft.Authorization/policyDefinitions/$($def.Name)"
+        $check = Get-AzPolicyDefinition -Id $defId -ErrorAction SilentlyContinue
+        if (-not $check) {
+            $allFound = $false
+            break
+        }
+    }
+    if ($allFound) { break }
+    if ($attempt -lt $maxRetries) {
+        Write-Host "  Waiting for propagation (attempt $attempt/$maxRetries)..." -ForegroundColor DarkGray
+        Start-Sleep -Seconds $retryDelay
+    }
+}
+if (-not $allFound) {
+    Write-Error "Policy definitions did not propagate within $($maxRetries * $retryDelay) seconds. Re-run the script to retry."
+}
+Write-Host "  All policy definitions verified." -ForegroundColor Green
+
 # ── Step 2: Create / update the initiative ──────────────
 Write-Host "`n[2/4] Creating initiative..." -ForegroundColor Yellow
 

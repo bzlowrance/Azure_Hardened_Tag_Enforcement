@@ -94,7 +94,7 @@
           "operations": [
             {
               "operation": "addOrReplace",
-              "field": "tags['Environment']",
+              "field": "tags['BusinessUnit']",
               "value": "[if(contains(parameters('tagValuesByResource'), concat(resourceGroup().name, '/', field('name'))), parameters('tagValuesByResource')[concat(resourceGroup().name, '/', field('name'))], if(contains(parameters('tagValuesByResourceGroup'), resourceGroup().name), parameters('tagValuesByResourceGroup')[resourceGroup().name], parameters('defaultTagValue')))]"
             }
           ]
