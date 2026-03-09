@@ -238,7 +238,12 @@ if (-not $SkipResourceGroups) {
             $failed = $jobs | Where-Object { $_.State -eq 'Failed' }
             if ($failed) {
                 Write-Warning "Some resource group deletions failed:"
-                $failed | ForEach-Object { Write-Warning "  $($_.Name): $($_.Error)" }
+                $failed | ForEach-Object {
+                    $reason = if ($_.ChildJobs.Count -gt 0 -and $_.ChildJobs[0].Error.Count -gt 0) {
+                        $_.ChildJobs[0].Error[0].ToString()
+                    } else { $_.JobStateInfo.Reason }
+                    Write-Warning "  $($_.Name): $reason"
+                }
             } else {
                 Write-Host "  All resource groups deleted successfully." -ForegroundColor Green
             }

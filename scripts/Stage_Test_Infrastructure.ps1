@@ -244,8 +244,8 @@ if ($alreadyUnderMg) {
     # Find the current parent by searching all management groups
     $allMgs = Get-AzManagementGroup -ErrorAction SilentlyContinue
     foreach ($mg in $allMgs) {
-        $mgDetail = Get-AzManagementGroup -GroupId $mg.Name -Expand -ErrorAction SilentlyContinue
-        $childSub = $mgDetail.Children | Where-Object { $_.Type -eq '/subscriptions' -and $_.Name -eq $subscriptionId }
+        $mgSubList = @(Get-AzManagementGroupSubscription -GroupId $mg.Name -ErrorAction SilentlyContinue)
+        $childSub = $mgSubList | Where-Object { $_.Id -like "*$subscriptionId*" }
         if ($childSub) {
             $originalParent = $mg.Name
             break

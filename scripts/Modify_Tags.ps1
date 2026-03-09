@@ -73,9 +73,9 @@ if ($SubscriptionId) {
 } else {
     Write-Host "Enumerating subscriptions under management group '$MG_ID'..." -ForegroundColor Cyan
     $mgDescendants = Get-AzManagementGroupSubscription -GroupId $MG_ID
-    $subscriptions = $mgDescendants | ForEach-Object {
+    $subscriptions = @($mgDescendants | ForEach-Object {
         Get-AzSubscription -SubscriptionId ($_.Id -split '/')[-1]
-    }
+    })
 }
 
 Write-Host "═══════════════════════════════════════════════════" -ForegroundColor Cyan

@@ -119,9 +119,9 @@ if ($SubscriptionId) {
 } else {
     Write-Host "Enumerating subscriptions under management group '$MG_ID'..." -ForegroundColor Cyan
     $mgDescendants = Get-AzManagementGroupSubscription -GroupId $MG_ID
-    $subscriptions = $mgDescendants | ForEach-Object {
+    $subscriptions = @($mgDescendants | ForEach-Object {
         Get-AzSubscription -SubscriptionId ($_.Id -split '/')[-1]
-    }
+    })
 }
 
 Write-Host "═══════════════════════════════════════════════════════" -ForegroundColor Cyan
@@ -184,7 +184,7 @@ foreach ($sub in $subscriptions) {
 }
 
 # ── Summary ─────────────────────────────────────────────
-$nonCompliantResources = ($violations | Select-Object -Property ResourceId -Unique).Count
+$nonCompliantResources = @($violations | Select-Object -Property ResourceId -Unique).Count
 
 Write-Host "`n═══════════════════════════════════════════════════════" -ForegroundColor Cyan
 Write-Host " Validation Results" -ForegroundColor Cyan
