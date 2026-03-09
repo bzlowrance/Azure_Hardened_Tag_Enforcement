@@ -152,6 +152,7 @@ foreach ($def in $policyDefs) {
 
 # Wait for policy definitions to propagate before creating the initiative
 Write-Host "  Verifying policy definitions are available..." -ForegroundColor DarkGray
+Start-Sleep -Seconds 10  # initial propagation delay
 $maxRetries = 12
 $retryDelay = 10
 $allFound = $false
@@ -159,7 +160,11 @@ for ($attempt = 1; $attempt -le $maxRetries; $attempt++) {
     $allFound = $true
     foreach ($def in $policyDefs) {
         $defId = "$mgScope/providers/Microsoft.Authorization/policyDefinitions/$($def.Name)"
-        $check = Get-AzPolicyDefinition -Id $defId -ErrorAction SilentlyContinue
+        try {
+            $check = Get-AzPolicyDefinition -Id $defId -ErrorAction Stop
+        } catch {
+            $check = $null
+        }
         if (-not $check) {
             $allFound = $false
             break
