@@ -186,15 +186,38 @@ if ($subscriptionId -eq 'CREATE_NEW') {
                 -BillingScope $billingScope `
                 -Workload    $workload
         } catch {
-            Write-Error ("Failed to create subscription: $($_.Exception.Message)`n" +
-                "Ensure your account has the Subscription Creator role on the invoice section.`n" +
-                "See: https://aka.ms/mca-section-invoice")
+            # The cmdlet may throw but still create the subscription — continue to lookup
+            Write-Host "" # newline after -NoNewline
+            Write-Warning "New-AzSubscriptionAlias reported an error: $($_.Exception.Message)"
+            Write-Host "  • Checking if the subscription was created anyway..." -ForegroundColor DarkGray
+            $newSub = $null
         }
 
-        if (-not $newSub -or -not $newSub.Properties) {
-            Write-Error "Subscription creation did not return a valid result. Check permissions on the billing invoice section (https://aka.ms/mca-section-invoice)."
+        # Try to extract the subscription ID from the response object
+        $subscriptionId = $null
+        if ($newSub) {
+            # Different Az.Subscription module versions return different shapes
+            if ($newSub.PSObject.Properties['Properties'] -and $newSub.Properties.PSObject.Properties['SubscriptionId']) {
+                $subscriptionId = $newSub.Properties.SubscriptionId
+            } elseif ($newSub.PSObject.Properties['SubscriptionId']) {
+                $subscriptionId = $newSub.SubscriptionId
+            }
         }
-        $subscriptionId = $newSub.Properties.SubscriptionId
+
+        # Fallback: look up the subscription by name
+        if (-not $subscriptionId) {
+            Start-Sleep -Seconds 10  # brief wait for propagation
+            $lookedUp = Get-AzSubscription -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -eq $subscriptionName -and $_.State -eq 'Enabled' } |
+                Select-Object -First 1
+            if ($lookedUp) {
+                $subscriptionId = $lookedUp.Id
+            }
+        }
+
+        if (-not $subscriptionId) {
+            Write-Error "Could not determine the subscription ID after creation. Check the Azure portal for subscription '$subscriptionName'."
+        }
         Write-Host " created ($subscriptionId)" -ForegroundColor Green
     }
 } else {
