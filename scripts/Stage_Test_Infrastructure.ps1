@@ -64,6 +64,7 @@ $billingAccount     = $envVars['STAGING_BILLING_ACCOUNT_NAME']
 $billingProfile     = $envVars['STAGING_BILLING_PROFILE_NAME']
 $invoiceSection     = $envVars['STAGING_INVOICE_SECTION_NAME']
 $location           = $envVars['STAGING_LOCATION']
+$workloadPreference = $envVars['STAGING_WORKLOAD']   # optional override: Production or DevTest
 $rgPrefix           = $envVars['STAGING_RG_PREFIX']
 $resourceGroups     = $envVars['STAGING_RESOURCE_GROUPS'] -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ }
 $paramsFilePath     = Join-Path $repoRoot $envVars['ASSIGNMENT_PARAMETERS_FILE']
@@ -131,13 +132,68 @@ if ($subscriptionId -eq 'CREATE_NEW') {
 
         $billingScope = "/providers/Microsoft.Billing/billingAccounts/$billingAccount/billingProfiles/$billingProfile/invoiceSections/$invoiceSection"
 
-        Write-Host "  • Creating subscription '$subscriptionName'..." -NoNewline
-        $newSub = New-AzSubscriptionAlias `
-            -AliasName   $subscriptionName `
-            -DisplayName $subscriptionName `
-            -BillingScope $billingScope `
-            -Workload    'DevTest'
+        # Query the billing profile to discover which Azure plans (workloads) are enabled
+        $bpApiPath  = "/providers/Microsoft.Billing/billingAccounts/$billingAccount/billingProfiles/${billingProfile}?api-version=2024-04-01"
+        $bpResponse = Invoke-AzRestMethod -Path $bpApiPath -Method GET -ErrorAction Stop
+        $bpContent  = $bpResponse.Content | ConvertFrom-Json
 
+        $availableWorkloads = @()
+        if ($bpContent.properties.enabledAzurePlans) {
+            foreach ($plan in @($bpContent.properties.enabledAzurePlans)) {
+                # skuId 0001 = Microsoft Azure Plan (Production)
+                # skuId 0002 = Microsoft Azure Plan for DevTest
+                if ($plan.skuId -eq '0001') { $availableWorkloads += 'Production' }
+                if ($plan.skuId -eq '0002') { $availableWorkloads += 'DevTest' }
+            }
+        }
+
+        if ($availableWorkloads.Count -eq 0) {
+            Write-Error "No Azure subscription plans are enabled on billing profile '$billingProfile'. Enable a plan in the Azure portal under Cost Management + Billing."
+        }
+
+        # Select workload: honour .env preference if valid, otherwise auto-select
+        if ($workloadPreference -and $availableWorkloads -contains $workloadPreference) {
+            $workload = $workloadPreference
+            Write-Host "  • Using requested workload: $workload" -ForegroundColor DarkGray
+        } elseif ($availableWorkloads.Count -eq 1) {
+            $workload = $availableWorkloads[0]
+            Write-Host "  • Auto-selected workload: $workload (only available plan)" -ForegroundColor DarkGray
+        } else {
+            # Multiple plans available — prompt the user to choose
+            Write-Host "  • Multiple Azure plans available:" -ForegroundColor White
+            for ($i = 0; $i -lt $availableWorkloads.Count; $i++) {
+                Write-Host "      [$($i + 1)] $($availableWorkloads[$i])" -ForegroundColor Cyan
+            }
+            $choice = $null
+            while (-not $choice) {
+                $input = Read-Host "    Select a plan (1-$($availableWorkloads.Count))"
+                $index = $input -as [int]
+                if ($index -ge 1 -and $index -le $availableWorkloads.Count) {
+                    $choice = $availableWorkloads[$index - 1]
+                } else {
+                    Write-Host "    Invalid selection. Please enter a number between 1 and $($availableWorkloads.Count)." -ForegroundColor Red
+                }
+            }
+            $workload = $choice
+            Write-Host "  • Selected workload: $workload" -ForegroundColor DarkGray
+        }
+
+        Write-Host "  • Creating subscription '$subscriptionName' ($workload)..." -NoNewline
+        try {
+            $newSub = New-AzSubscriptionAlias `
+                -AliasName   $subscriptionName `
+                -DisplayName $subscriptionName `
+                -BillingScope $billingScope `
+                -Workload    $workload
+        } catch {
+            Write-Error ("Failed to create subscription: $($_.Exception.Message)`n" +
+                "Ensure your account has the Subscription Creator role on the invoice section.`n" +
+                "See: https://aka.ms/mca-section-invoice")
+        }
+
+        if (-not $newSub -or -not $newSub.Properties) {
+            Write-Error "Subscription creation did not return a valid result. Check permissions on the billing invoice section (https://aka.ms/mca-section-invoice)."
+        }
         $subscriptionId = $newSub.Properties.SubscriptionId
         Write-Host " created ($subscriptionId)" -ForegroundColor Green
     }
