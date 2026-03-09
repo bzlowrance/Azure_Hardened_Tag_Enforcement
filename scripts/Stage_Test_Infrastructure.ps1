@@ -70,56 +70,51 @@ $resourceGroups     = $envVars['STAGING_RESOURCE_GROUPS'] -split ',' | ForEach-O
 $paramsFilePath     = Join-Path $repoRoot $envVars['ASSIGNMENT_PARAMETERS_FILE']
 
 # ── Resolve Azure region ────────────────────────────────
-# Honours .env value if set; otherwise auto-detects the best region.
+# Honours .env value if set; otherwise auto-detects from the subscription's
+# available regions (handles commercial, gov, and sovereign clouds).
 function Resolve-AzureLocation {
     param([string]$Preferred)
 
-    if ($Preferred -and $Preferred -ne 'AUTO') {
-        # Validate that the specified region actually exists
-        $valid = Get-AzLocation | Where-Object { $_.Location -eq $Preferred }
-        if ($valid) { return $Preferred }
-        Write-Warning "Configured location '$Preferred' not found — auto-detecting."
+    # Get only the locations available to the current subscription
+    $available = @(Get-AzLocation | Select-Object -ExpandProperty Location)
+    if ($available.Count -eq 0) {
+        Write-Error "No Azure locations available for the current subscription. Verify your login and subscription context."
     }
 
-    # Strategy: pick the closest region by looking at where the user already
-    # has resources, or fall back to a sensible default.
-    $allLocations = @(Get-AzLocation | Where-Object { $_.RegionType -eq 'Physical' -and $_.PhysicalLocation })
+    # If a preference is set, validate it against available locations
+    if ($Preferred -and $Preferred -ne 'AUTO') {
+        if ($available -contains $Preferred) { return $Preferred }
+        Write-Warning "Configured location '$Preferred' is not available for this subscription."
+        Write-Warning "Available: $($available -join ', ')"
+        Write-Host "Auto-detecting a suitable region..." -ForegroundColor Yellow
+    }
 
-    # 1) Check existing resource groups in the current subscription for a
-    #    frequently-used region (avoids cross-region latency surprises).
+    # 1) Check existing resource groups for the most-used region
     $existingRgs = @(Get-AzResourceGroup -ErrorAction SilentlyContinue)
     if ($existingRgs.Count -gt 0) {
         $topRegion = $existingRgs |
             Group-Object Location |
             Sort-Object Count -Descending |
             Select-Object -First 1
-        if ($topRegion -and ($allLocations.Location -contains $topRegion.Name)) {
+        if ($topRegion -and ($available -contains $topRegion.Name)) {
             return $topRegion.Name
         }
     }
 
-    # 2) Infer from the tenant's home country via the Azure AD tenant.
-    #    Map common countries to their nearest Azure region.
-    $tenantId = (Get-AzContext).Tenant.Id
-    $tenantDetail = Get-AzTenant -TenantId $tenantId -ErrorAction SilentlyContinue
-    $countryCode = if ($tenantDetail -and $tenantDetail.PSObject.Properties['CountryCode']) { $tenantDetail.CountryCode } else { $null }
-
-    $regionMap = @{
-        'US' = 'eastus2';   'CA' = 'canadacentral'; 'GB' = 'uksouth'
-        'DE' = 'germanywestcentral'; 'FR' = 'francecentral'; 'AU' = 'australiaeast'
-        'JP' = 'japaneast'; 'IN' = 'centralindia';  'BR' = 'brazilsouth'
-        'KR' = 'koreacentral'; 'SG' = 'southeastasia'; 'ZA' = 'southafricanorth'
-        'AE' = 'uaenorth';  'CH' = 'switzerlandnorth'; 'SE' = 'swedencentral'
-        'NO' = 'norwayeast'; 'NL' = 'westeurope';    'IE' = 'northeurope'
+    # 2) Prefer well-known general-purpose regions if available
+    $preferred = @(
+        'eastus2', 'eastus', 'westus2', 'centralus',               # Commercial US
+        'usgovvirginia', 'usgovarizona', 'usgovtexas',             # US Government
+        'westeurope', 'northeurope', 'uksouth',                     # Europe
+        'canadacentral', 'australiaeast', 'japaneast',              # Other
+        'swedencentral', 'germanywestcentral', 'francecentral'
+    )
+    foreach ($r in $preferred) {
+        if ($available -contains $r) { return $r }
     }
 
-    if ($countryCode -and $regionMap.ContainsKey($countryCode)) {
-        $mapped = $regionMap[$countryCode]
-        if ($allLocations.Location -contains $mapped) { return $mapped }
-    }
-
-    # 3) Fallback: eastus2 (large, broadly available, cost-effective)
-    return 'eastus2'
+    # 3) Fallback: first available region
+    return $available[0]
 }
 
 $location = Resolve-AzureLocation -Preferred $locationPref

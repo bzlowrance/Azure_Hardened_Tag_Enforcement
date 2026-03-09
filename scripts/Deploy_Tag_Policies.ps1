@@ -61,13 +61,17 @@ $POLICY_BU          = $envVars['POLICY_DEF_BUSINESSUNIT']
 function Resolve-AzureLocation {
     param([string]$Preferred)
 
-    if ($Preferred -and $Preferred -ne 'AUTO') {
-        $valid = Get-AzLocation | Where-Object { $_.Location -eq $Preferred }
-        if ($valid) { return $Preferred }
-        Write-Warning "Configured location '$Preferred' not found — auto-detecting."
+    $available = @(Get-AzLocation | Select-Object -ExpandProperty Location)
+    if ($available.Count -eq 0) {
+        Write-Error "No Azure locations available for the current subscription."
     }
 
-    $allLocations = @(Get-AzLocation | Where-Object { $_.RegionType -eq 'Physical' -and $_.PhysicalLocation })
+    if ($Preferred -and $Preferred -ne 'AUTO') {
+        if ($available -contains $Preferred) { return $Preferred }
+        Write-Warning "Configured location '$Preferred' is not available for this subscription."
+        Write-Warning "Available: $($available -join ', ')"
+        Write-Host "Auto-detecting a suitable region..." -ForegroundColor Yellow
+    }
 
     $existingRgs = @(Get-AzResourceGroup -ErrorAction SilentlyContinue)
     if ($existingRgs.Count -gt 0) {
@@ -75,30 +79,23 @@ function Resolve-AzureLocation {
             Group-Object Location |
             Sort-Object Count -Descending |
             Select-Object -First 1
-        if ($topRegion -and ($allLocations.Location -contains $topRegion.Name)) {
+        if ($topRegion -and ($available -contains $topRegion.Name)) {
             return $topRegion.Name
         }
     }
 
-    $tenantId = (Get-AzContext).Tenant.Id
-    $tenantDetail = Get-AzTenant -TenantId $tenantId -ErrorAction SilentlyContinue
-    $countryCode = if ($tenantDetail -and $tenantDetail.PSObject.Properties['CountryCode']) { $tenantDetail.CountryCode } else { $null }
-
-    $regionMap = @{
-        'US' = 'eastus2';   'CA' = 'canadacentral'; 'GB' = 'uksouth'
-        'DE' = 'germanywestcentral'; 'FR' = 'francecentral'; 'AU' = 'australiaeast'
-        'JP' = 'japaneast'; 'IN' = 'centralindia';  'BR' = 'brazilsouth'
-        'KR' = 'koreacentral'; 'SG' = 'southeastasia'; 'ZA' = 'southafricanorth'
-        'AE' = 'uaenorth';  'CH' = 'switzerlandnorth'; 'SE' = 'swedencentral'
-        'NO' = 'norwayeast'; 'NL' = 'westeurope';    'IE' = 'northeurope'
+    $preferred = @(
+        'eastus2', 'eastus', 'westus2', 'centralus',
+        'usgovvirginia', 'usgovarizona', 'usgovtexas',
+        'westeurope', 'northeurope', 'uksouth',
+        'canadacentral', 'australiaeast', 'japaneast',
+        'swedencentral', 'germanywestcentral', 'francecentral'
+    )
+    foreach ($r in $preferred) {
+        if ($available -contains $r) { return $r }
     }
 
-    if ($countryCode -and $regionMap.ContainsKey($countryCode)) {
-        $mapped = $regionMap[$countryCode]
-        if ($allLocations.Location -contains $mapped) { return $mapped }
-    }
-
-    return 'eastus2'
+    return $available[0]
 }
 
 $LOCATION = Resolve-AzureLocation -Preferred $locationPref
