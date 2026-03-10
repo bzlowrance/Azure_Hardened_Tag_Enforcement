@@ -272,17 +272,40 @@ if (-not (Test-Path $paramsFilePath)) {
 
 $params = Get-Content $paramsFilePath -Raw | ConvertFrom-Json
 
+function Ensure-PolicyValidatorPlaceholders {
+    param(
+        [Parameter(Mandatory = $true)]
+        [psobject]$Value,
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('ResourceGroup', 'Resource')]
+        [string]$Kind
+    )
+
+    $ht = @{}
+    if ($null -ne $Value) {
+        $Value.PSObject.Properties | ForEach-Object { $ht[$_.Name] = $_.Value }
+    }
+
+    if ($Kind -eq 'ResourceGroup') {
+        if (-not $ht.ContainsKey('disabled')) { $ht['disabled'] = '' }
+    } else {
+        if (-not $ht.ContainsKey('disabled/disabled')) { $ht['disabled/disabled'] = '' }
+    }
+
+    return $ht
+}
+
 # Build parameter values (wrap each value per the ARM assignment schema)
 $assignmentParamValues = @{
     defaultOwner                  = @{ value = $params.defaultOwner }
-    ownerOverrides                = @{ value = $params.ownerOverrides }
-    ownerResourceOverrides        = @{ value = $params.ownerResourceOverrides }
+    ownerOverrides                = @{ value = (Ensure-PolicyValidatorPlaceholders -Value $params.ownerOverrides -Kind ResourceGroup) }
+    ownerResourceOverrides        = @{ value = (Ensure-PolicyValidatorPlaceholders -Value $params.ownerResourceOverrides -Kind Resource) }
     defaultCostCode               = @{ value = $params.defaultCostCode }
-    costCodeOverrides             = @{ value = $params.costCodeOverrides }
-    costCodeResourceOverrides     = @{ value = $params.costCodeResourceOverrides }
+    costCodeOverrides             = @{ value = (Ensure-PolicyValidatorPlaceholders -Value $params.costCodeOverrides -Kind ResourceGroup) }
+    costCodeResourceOverrides     = @{ value = (Ensure-PolicyValidatorPlaceholders -Value $params.costCodeResourceOverrides -Kind Resource) }
     defaultBusinessUnit           = @{ value = $params.defaultBusinessUnit }
-    businessUnitOverrides         = @{ value = $params.businessUnitOverrides }
-    businessUnitResourceOverrides = @{ value = $params.businessUnitResourceOverrides }
+    businessUnitOverrides         = @{ value = (Ensure-PolicyValidatorPlaceholders -Value $params.businessUnitOverrides -Kind ResourceGroup) }
+    businessUnitResourceOverrides = @{ value = (Ensure-PolicyValidatorPlaceholders -Value $params.businessUnitResourceOverrides -Kind Resource) }
 }
 
 $policySetDefId = "$mgScope/providers/Microsoft.Authorization/policySetDefinitions/$INITIATIVE_NAME"

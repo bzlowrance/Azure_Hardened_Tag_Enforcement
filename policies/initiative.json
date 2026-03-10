@@ -22,7 +22,9 @@
           "displayName": "Owner overrides by resource group",
           "description": "Map of RG names to Owner values. Example: {\"rg-dev\": \"DevOpsTeam\"}"
         },
-        "defaultValue": {}
+        "defaultValue": {
+          "disabled": ""
+        }
       },
       "ownerResourceOverrides": {
         "type": "Object",
@@ -30,7 +32,9 @@
           "displayName": "Owner overrides by specific resource",
           "description": "Map of rgName/resourceName to Owner values. Takes priority over RG overrides. Example: {\"rg-dev/vm-special-01\": \"PlatformTeam\"}"
         },
-        "defaultValue": {}
+        "defaultValue": {
+          "disabled/disabled": ""
+        }
       },
       "defaultCostCode": {
         "type": "String",
@@ -46,7 +50,9 @@
           "displayName": "CostCode overrides by resource group",
           "description": "Map of RG names to CostCode values. Example: {\"rg-dev\": \"CC-2000-DEV\"}"
         },
-        "defaultValue": {}
+        "defaultValue": {
+          "disabled": ""
+        }
       },
       "costCodeResourceOverrides": {
         "type": "Object",
@@ -54,7 +60,9 @@
           "displayName": "CostCode overrides by specific resource",
           "description": "Map of rgName/resourceName to CostCode values. Takes priority over RG overrides. Example: {\"rg-prod/vm-billing-01\": \"CC-9000-BILLING\"}"
         },
-        "defaultValue": {}
+        "defaultValue": {
+          "disabled/disabled": ""
+        }
       },
       "defaultBusinessUnit": {
         "type": "String",
@@ -70,7 +78,9 @@
           "displayName": "BusinessUnit overrides by resource group",
           "description": "Map of RG names to BusinessUnit values. Example: {\"rg-finance\": \"Finance\"}"
         },
-        "defaultValue": {}
+        "defaultValue": {
+          "disabled": ""
+        }
       },
       "businessUnitResourceOverrides": {
         "type": "Object",
@@ -78,7 +88,9 @@
           "displayName": "BusinessUnit overrides by specific resource",
           "description": "Map of rgName/resourceName to BusinessUnit values. Takes priority over RG overrides. Example: {\"rg-prod/vm-billing-01\": \"Finance\"}"
         },
-        "defaultValue": {}
+        "defaultValue": {
+          "disabled/disabled": ""
+        }
       }
     },
     "policyDefinitions": [
