@@ -354,47 +354,47 @@ Write-Host " OK" -ForegroundColor Green
 # ── Step 4: Trigger policy evaluation scan ─────────────
 Write-Host "`n[4/5] Triggering policy evaluation scan..." -ForegroundColor Yellow
 
-$scanStarted = $false
-# Prefer REST first for cross-version reliability in Gov/sovereign clouds.
-try {
-    $triggerPathTemplate = "/providers/Microsoft.Management/managementGroups/$MG_ID/providers/Microsoft.PolicyInsights/policyStates/latest/triggerEvaluation?api-version={apiVersion}"
-    $triggerApiVersions = @('2019-10-01', '2018-07-01-preview')
-    $triggerResp = Invoke-AzRestWithApiFallback -PathTemplate $triggerPathTemplate -Method POST -ApiVersions $triggerApiVersions
-    if ($triggerResp.StatusCode -ge 200 -and $triggerResp.StatusCode -lt 300) {
-        $scanStarted = $true
-        Write-Host "  • Policy evaluation scan started via REST for management group '$MG_ID'." -ForegroundColor Green
-    }
-} catch {
-    Write-Warning "  Could not start compliance scan via REST: $($_.Exception.Message)"
-}
+# triggerEvaluation only supports subscription scope, not management group scope.
+# Iterate over each subscription under the management group and trigger individually.
+$scanSubs = @(Get-AzManagementGroupSubscription -GroupId $MG_ID -ErrorAction SilentlyContinue)
+if ($scanSubs.Count -eq 0) {
+    Write-Warning "  No subscriptions found under management group '$MG_ID'. Skipping scan."
+} else {
+    foreach ($sub in $scanSubs) {
+        $subId = ($sub.Id -split '/')[-1]
+        $subName = if ($sub.DisplayName) { $sub.DisplayName } else { $subId }
+        $subScanOk = $false
 
-$scanCmd = Get-Command Start-AzPolicyComplianceScan -ErrorAction SilentlyContinue
-if (-not $scanStarted -and $scanCmd) {
-    try {
-        $scanParamNames = @($scanCmd.Parameters.Keys)
-        if ($scanParamNames -contains 'ManagementGroupName') {
-            Start-AzPolicyComplianceScan -ManagementGroupName $MG_ID | Out-Null
-            $scanStarted = $true
-        } elseif ($scanParamNames -contains 'Scope') {
-            Start-AzPolicyComplianceScan -Scope $mgScope | Out-Null
-            $scanStarted = $true
-        } elseif ($scanParamNames -contains 'ResourceId') {
-            Start-AzPolicyComplianceScan -ResourceId $mgScope | Out-Null
-            $scanStarted = $true
+        # Try REST first (works reliably in Gov/sovereign clouds)
+        try {
+            $triggerPath = "/subscriptions/$subId/providers/Microsoft.PolicyInsights/policyStates/latest/triggerEvaluation?api-version=2019-10-01"
+            $triggerResp = Invoke-AzRestMethod -Path $triggerPath -Method POST -ErrorAction Stop
+            if ($triggerResp.StatusCode -ge 200 -and $triggerResp.StatusCode -lt 300) {
+                $subScanOk = $true
+            }
+        } catch {
+            # Fall back to cmdlet
         }
 
-        if ($scanStarted) {
-            Write-Host "  • Policy evaluation scan started for management group '$MG_ID'." -ForegroundColor Green
-        } else {
-            Write-Warning "  Start-AzPolicyComplianceScan is installed but does not expose a management group compatible parameter set."
+        # Cmdlet fallback — run scan at subscription scope
+        if (-not $subScanOk) {
+            try {
+                Set-AzContext -SubscriptionId $subId -Force | Out-Null
+                Start-AzPolicyComplianceScan -AsJob | Out-Null
+                $subScanOk = $true
+            } catch {
+                Write-Warning "  Could not start scan for subscription '$subName': $($_.Exception.Message)"
+            }
         }
-    } catch {
-        Write-Warning "  Could not start compliance scan via cmdlet: $($_.Exception.Message)"
-    }
-}
 
-if (-not $scanStarted) {
-    Write-Warning "  Policy evaluation scan could not be started automatically. Remediation tasks will still run."
+        if ($subScanOk) {
+            Write-Host "  • Evaluation scan triggered for subscription '$subName' ($subId)." -ForegroundColor Green
+        }
+    }
+
+    # Restore context to first subscription for remediation step
+    $firstSubId = ($scanSubs[0].Id -split '/')[-1]
+    Set-AzContext -SubscriptionId $firstSubId -Force | Out-Null
 }
 
 # ── Step 5: Trigger remediation ─────────────────────────
