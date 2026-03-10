@@ -357,7 +357,7 @@ function New-StorageName {
 Write-Host "`n[4/5] Creating resource groups..." -ForegroundColor Yellow
 
 foreach ($rg in $resourceGroups) {
-    $rgName = "$rgPrefix$rg"
+    $rgName = "${rgPrefix}-${rg}"
     Write-Host "  • $rgName ... " -NoNewline
     $existing = Get-AzResourceGroup -Name $rgName -ErrorAction SilentlyContinue
     if ($existing) {
@@ -393,7 +393,7 @@ if (-not $storageProvider -or $storageProvider[0].RegistrationState -ne 'Registe
 
 # 5a: Baseline storage account per RG
 foreach ($rg in $resourceGroups) {
-    $rgName = "$rgPrefix$rg"
+    $rgName = "${rgPrefix}-${rg}"
     $storageName = New-StorageName -BaseName "stg$($rg -replace '-','')"
 
     Write-Host "  • $rgName/$storageName ... " -NoNewline
@@ -413,7 +413,7 @@ foreach ($rg in $resourceGroups) {
 # 5b: Named resources from resource-level override maps
 foreach ($key in $resourceOverrideKeys) {
     $parts        = $key -split '/', 2
-    $rgName       = "$rgPrefix$($parts[0])"
+    $rgName       = "${rgPrefix}-$($parts[0])"
     $resourceName = $parts[1]
 
     $storageName = ($resourceName -replace '[^a-zA-Z0-9]', '').ToLower()

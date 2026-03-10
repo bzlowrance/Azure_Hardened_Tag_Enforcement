@@ -219,7 +219,7 @@ if (-not $SkipResourceGroups) {
 
         $jobs = @()
         foreach ($rg in $allRgs) {
-            $rgName = "$rgPrefix$rg"
+            $rgName = "${rgPrefix}-${rg}"
             $existing = Get-AzResourceGroup -Name $rgName -ErrorAction SilentlyContinue
             if ($existing) {
                 Write-Host "  • $rgName ... " -NoNewline

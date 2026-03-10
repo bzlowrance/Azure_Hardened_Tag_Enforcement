@@ -1,36 +1,36 @@
 {
-  "_comment": "Example assignment parameter values. Override priority: resource-level (rgName/resourceName) > RG-level (rgName) > default. Only add entries for scopes that differ from the default.",
+  "_comment": "Example assignment parameter values. Override priority: resource-level (rgName/resourceName) > RG-level (rgName) > default. Only add entries for scopes that differ from the default. RG names must match the ACTUAL Azure resource group names (including any prefix from STAGING_RG_PREFIX).",
 
   "defaultOwner": "John Smith",
   "ownerOverrides": {
-    "rg-dev": "Sarah Chen",
-    "rg-shared": "Mike Johnson",
-    "rg-data": "Emily Davis"
+    "hardened-tags-rg-dev": "Sarah Chen",
+    "hardened-tags-rg-shared": "Mike Johnson",
+    "hardened-tags-rg-data": "Emily Davis"
   },
   "ownerResourceOverrides": {
-    "rg-dev/vm-special-01": "Alex Rivera",
-    "rg-shared/sql-finance-db": "Rachel Kim"
+    "hardened-tags-rg-dev/vm-special-01": "Alex Rivera",
+    "hardened-tags-rg-shared/sql-finance-db": "Rachel Kim"
   },
 
   "defaultCostCode": "CC-1000",
   "costCodeOverrides": {
-    "rg-dev": "CC-2000-DEV",
-    "rg-staging": "CC-3000-STG",
-    "rg-data": "CC-4000-DATA"
+    "hardened-tags-rg-dev": "CC-2000-DEV",
+    "hardened-tags-rg-staging": "CC-3000-STG",
+    "hardened-tags-rg-data": "CC-4000-DATA"
   },
   "costCodeResourceOverrides": {
-    "rg-prod/vm-billing-01": "CC-9000-BILLING",
-    "rg-data/storage-archive": "CC-4500-ARCHIVE"
+    "hardened-tags-rg-prod/vm-billing-01": "CC-9000-BILLING",
+    "hardened-tags-rg-data/storage-archive": "CC-4500-ARCHIVE"
   },
 
   "defaultBusinessUnit": "Engineering",
   "businessUnitOverrides": {
-    "rg-finance": "Finance",
-    "rg-marketing": "Marketing",
-    "rg-hr": "HumanResources"
+    "hardened-tags-rg-finance": "Finance",
+    "hardened-tags-rg-marketing": "Marketing",
+    "hardened-tags-rg-hr": "HumanResources"
   },
   "businessUnitResourceOverrides": {
-    "rg-prod/vm-billing-01": "Finance",
-    "rg-prod/app-recruiting": "HumanResources"
+    "hardened-tags-rg-prod/vm-billing-01": "Finance",
+    "hardened-tags-rg-prod/app-recruiting": "HumanResources"
   }
 }
