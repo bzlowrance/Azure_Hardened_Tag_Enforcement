@@ -98,9 +98,43 @@ function Resolve-AzureLocation {
     return $available[0]
 }
 
+function Invoke-AzRestWithApiFallback {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$PathTemplate,
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('GET', 'PUT', 'POST', 'PATCH', 'DELETE')]
+        [string]$Method,
+        [string]$Payload,
+        [string[]]$ApiVersions
+    )
+
+    $lastError = $null
+    foreach ($apiVersion in $ApiVersions) {
+        $path = $PathTemplate -replace '\{apiVersion\}', $apiVersion
+        try {
+            if ($Payload) {
+                return Invoke-AzRestMethod -Path $path -Method $Method -Payload $Payload -ErrorAction Stop
+            }
+            return Invoke-AzRestMethod -Path $path -Method $Method -ErrorAction Stop
+        } catch {
+            $lastError = $_
+            $msg = $_.Exception.Message
+            # In sovereign clouds, newer API versions may lag. Try the next one.
+            if ($msg -match 'InvalidApiVersionParameter|NoRegisteredProviderFound|The api-version') {
+                continue
+            }
+            throw
+        }
+    }
+
+    throw $lastError
+}
+
 $mgScope         = "/providers/Microsoft.Management/managementGroups/$MG_ID"
 $policiesDir     = Join-Path $repoRoot 'policies'
 $paramsFilePath  = Join-Path $repoRoot $PARAMS_FILE
+$policyApiVersions = @('2023-04-01', '2022-06-01', '2021-06-01')
 
 # Ensure we are in the context of a subscription under the target MG so
 # Get-AzLocation returns the correct cloud-specific regions (gov, sovereign, etc.)
@@ -131,23 +165,38 @@ $policyDefs = @(
 
 foreach ($def in $policyDefs) {
     $filePath = Join-Path $policiesDir $def.File
-    $json     = Get-Content $filePath -Raw | ConvertFrom-Json
-
-    $ruleJson   = $json.properties.policyRule   | ConvertTo-Json -Depth 20
-    $paramJson  = $json.properties.parameters   | ConvertTo-Json -Depth 20
+    $rawJson  = Get-Content $filePath -Raw
 
     Write-Host "  • $($def.Name) ... " -NoNewline
-    New-AzPolicyDefinition `
-        -Name            $def.Name `
-        -DisplayName     $json.properties.displayName `
-        -Description     $json.properties.description `
-        -Mode            $json.properties.mode `
-        -Policy          $ruleJson `
-        -Parameter       $paramJson `
-        -Metadata        '{"category":"Tags"}' `
-        -ManagementGroupName $MG_ID | Out-Null
 
-    Write-Host "OK" -ForegroundColor Green
+    # Use the REST API to create/update the definition — this avoids serialization
+    # issues with ConvertTo-Json and handles gov/sovereign clouds correctly.
+    $defApiPathTemplate = "/providers/Microsoft.Management/managementGroups/$MG_ID/providers/Microsoft.Authorization/policyDefinitions/$($def.Name)?api-version={apiVersion}"
+    $defObj = $rawJson | ConvertFrom-Json
+
+    $body = @{
+        properties = @{
+            displayName = $defObj.properties.displayName
+            description = $defObj.properties.description
+            mode        = $defObj.properties.mode
+            metadata    = @{ category = 'Tags' }
+            parameters  = $defObj.properties.parameters
+            policyRule  = $defObj.properties.policyRule
+        }
+    } | ConvertTo-Json -Depth 30
+
+    $response = Invoke-AzRestWithApiFallback -PathTemplate $defApiPathTemplate -Method PUT -Payload $body -ApiVersions $policyApiVersions
+    if ($response.StatusCode -ge 200 -and $response.StatusCode -lt 300) {
+        Write-Host "OK" -ForegroundColor Green
+    } else {
+        Write-Host "FAILED ($($response.StatusCode))" -ForegroundColor Red
+        $errContent = $response.Content | ConvertFrom-Json -ErrorAction SilentlyContinue
+        if ($errContent -and $errContent.error) {
+            Write-Error "Failed to create policy '$($def.Name)': $($errContent.error.message)"
+        } else {
+            Write-Error "Failed to create policy '$($def.Name)': HTTP $($response.StatusCode) - $($response.Content)"
+        }
+    }
 }
 
 # Wait for policy definitions to propagate before creating the initiative
@@ -159,13 +208,13 @@ $allFound = $false
 for ($attempt = 1; $attempt -le $maxRetries; $attempt++) {
     $allFound = $true
     foreach ($def in $policyDefs) {
-        $defId = "$mgScope/providers/Microsoft.Authorization/policyDefinitions/$($def.Name)"
+        $checkPathTemplate = "/providers/Microsoft.Management/managementGroups/$MG_ID/providers/Microsoft.Authorization/policyDefinitions/$($def.Name)?api-version={apiVersion}"
         try {
-            $check = Get-AzPolicyDefinition -Id $defId -ErrorAction Stop
+            $checkResp = Invoke-AzRestWithApiFallback -PathTemplate $checkPathTemplate -Method GET -ApiVersions $policyApiVersions
         } catch {
-            $check = $null
+            $checkResp = $null
         }
-        if (-not $check) {
+        if (-not $checkResp -or $checkResp.StatusCode -ne 200) {
             $allFound = $false
             break
         }
@@ -191,19 +240,28 @@ $initJson = Get-Content $initFile -Raw
 $initJson = $initJson -replace '<MG_ID>', $MG_ID
 $initObj  = $initJson | ConvertFrom-Json
 
-$initParamJson  = $initObj.properties.parameters        | ConvertTo-Json -Depth 20
-$initDefsJson   = $initObj.properties.policyDefinitions | ConvertTo-Json -Depth 20
+$initApiPathTemplate = "/providers/Microsoft.Management/managementGroups/$MG_ID/providers/Microsoft.Authorization/policySetDefinitions/${INITIATIVE_NAME}?api-version={apiVersion}"
+$initBody = @{
+    properties = @{
+        displayName       = $initObj.properties.displayName
+        description       = $initObj.properties.description
+        metadata          = @{ category = 'Tags'; version = '5.0.0' }
+        parameters        = $initObj.properties.parameters
+        policyDefinitions = $initObj.properties.policyDefinitions
+    }
+} | ConvertTo-Json -Depth 30
 
-New-AzPolicySetDefinition `
-    -Name                $INITIATIVE_NAME `
-    -DisplayName         $initObj.properties.displayName `
-    -Description         $initObj.properties.description `
-    -PolicyDefinition    $initDefsJson `
-    -Parameter           $initParamJson `
-    -Metadata            '{"category":"Tags","version":"5.0.0"}' `
-    -ManagementGroupName $MG_ID | Out-Null
-
-Write-Host "  • $INITIATIVE_NAME ... OK" -ForegroundColor Green
+$initResp = Invoke-AzRestWithApiFallback -PathTemplate $initApiPathTemplate -Method PUT -Payload $initBody -ApiVersions $policyApiVersions
+if ($initResp.StatusCode -ge 200 -and $initResp.StatusCode -lt 300) {
+    Write-Host "  • $INITIATIVE_NAME ... OK" -ForegroundColor Green
+} else {
+    $errContent = $initResp.Content | ConvertFrom-Json -ErrorAction SilentlyContinue
+    if ($errContent -and $errContent.error) {
+        Write-Error "Failed to create initiative: $($errContent.error.message)"
+    } else {
+        Write-Error "Failed to create initiative: HTTP $($initResp.StatusCode) - $($initResp.Content)"
+    }
+}
 
 # ── Step 3: Create / update the assignment ──────────────
 Write-Host "`n[3/4] Creating assignment..." -ForegroundColor Yellow
@@ -214,36 +272,48 @@ if (-not (Test-Path $paramsFilePath)) {
 
 $params = Get-Content $paramsFilePath -Raw | ConvertFrom-Json
 
-# Build the parameter hashtable for the assignment
-$assignmentParams = @{
-    defaultOwner                 = $params.defaultOwner
-    ownerOverrides               = $params.ownerOverrides
-    ownerResourceOverrides       = $params.ownerResourceOverrides
-    defaultCostCode              = $params.defaultCostCode
-    costCodeOverrides            = $params.costCodeOverrides
-    costCodeResourceOverrides    = $params.costCodeResourceOverrides
-    defaultBusinessUnit          = $params.defaultBusinessUnit
-    businessUnitOverrides        = $params.businessUnitOverrides
-    businessUnitResourceOverrides = $params.businessUnitResourceOverrides
+# Build parameter values (wrap each value per the ARM assignment schema)
+$assignmentParamValues = @{
+    defaultOwner                  = @{ value = $params.defaultOwner }
+    ownerOverrides                = @{ value = $params.ownerOverrides }
+    ownerResourceOverrides        = @{ value = $params.ownerResourceOverrides }
+    defaultCostCode               = @{ value = $params.defaultCostCode }
+    costCodeOverrides             = @{ value = $params.costCodeOverrides }
+    costCodeResourceOverrides     = @{ value = $params.costCodeResourceOverrides }
+    defaultBusinessUnit           = @{ value = $params.defaultBusinessUnit }
+    businessUnitOverrides         = @{ value = $params.businessUnitOverrides }
+    businessUnitResourceOverrides = @{ value = $params.businessUnitResourceOverrides }
 }
 
 $policySetDefId = "$mgScope/providers/Microsoft.Authorization/policySetDefinitions/$INITIATIVE_NAME"
 
-New-AzPolicyAssignment `
-    -Name                  $ASSIGNMENT_NAME `
-    -DisplayName           $ASSIGNMENT_DISPLAY `
-    -Scope                 $mgScope `
-    -PolicySetDefinition   (Get-AzPolicySetDefinition -Id $policySetDefId) `
-    -PolicyParameterObject $assignmentParams `
-    -Location              $LOCATION `
-    -IdentityType          'SystemAssigned' | Out-Null
+$assignApiPathTemplate = "${mgScope}/providers/Microsoft.Authorization/policyAssignments/${ASSIGNMENT_NAME}?api-version={apiVersion}"
+$assignBody = @{
+    location   = $LOCATION
+    identity   = @{ type = 'SystemAssigned' }
+    properties = @{
+        displayName        = $ASSIGNMENT_DISPLAY
+        policyDefinitionId = $policySetDefId
+        parameters         = $assignmentParamValues
+    }
+} | ConvertTo-Json -Depth 30
 
-Write-Host "  • $ASSIGNMENT_NAME ... OK" -ForegroundColor Green
+$assignResp = Invoke-AzRestWithApiFallback -PathTemplate $assignApiPathTemplate -Method PUT -Payload $assignBody -ApiVersions $policyApiVersions
+if ($assignResp.StatusCode -ge 200 -and $assignResp.StatusCode -lt 300) {
+    Write-Host "  • $ASSIGNMENT_NAME ... OK" -ForegroundColor Green
+} else {
+    $errContent = $assignResp.Content | ConvertFrom-Json -ErrorAction SilentlyContinue
+    if ($errContent -and $errContent.error) {
+        Write-Error "Failed to create assignment: $($errContent.error.message)"
+    } else {
+        Write-Error "Failed to create assignment: HTTP $($assignResp.StatusCode) - $($assignResp.Content)"
+    }
+}
 
 # Grant the managed identity Tag Contributor on the MG scope
 Write-Host "  • Granting Tag Contributor role to managed identity..." -NoNewline
-$assignment = Get-AzPolicyAssignment -Name $ASSIGNMENT_NAME -Scope $mgScope
-$principalId = $assignment.Identity.PrincipalId
+$assignContent = $assignResp.Content | ConvertFrom-Json
+$principalId = $assignContent.identity.principalId
 $tagContributorRoleId = "4a9ae827-6dc8-4573-8ac7-8239d42aa03f"
 
 # Check if role assignment already exists before creating
