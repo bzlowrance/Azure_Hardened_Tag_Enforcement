@@ -21,9 +21,7 @@
 #>
 
 [CmdletBinding()]
-param(
-    [switch]$SkipRemediation
-)
+param()
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -353,25 +351,36 @@ if (-not $existingRole) {
 }
 Write-Host " OK" -ForegroundColor Green
 
-# ── Step 4: Trigger remediation ─────────────────────────
-if ($SkipRemediation) {
-    Write-Host "`n[4/4] Remediation skipped (-SkipRemediation)." -ForegroundColor DarkGray
-} else {
-    Write-Host "`n[4/4] Starting remediation tasks..." -ForegroundColor Yellow
+# ── Step 4: Trigger policy evaluation scan ─────────────
+Write-Host "`n[4/5] Triggering policy evaluation scan..." -ForegroundColor Yellow
 
-    $refIds = @('enforceOwnerTag', 'enforceCostCodeTag', 'enforceBusinessUnitTag')
-    foreach ($refId in $refIds) {
-        $remName = "remediate-$refId-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
-        Write-Host "  • $remName ... " -NoNewline
-
-        Start-AzPolicyRemediation `
-            -Name                          $remName `
-            -PolicyAssignmentId            "$mgScope/providers/Microsoft.Authorization/policyAssignments/$ASSIGNMENT_NAME" `
-            -PolicyDefinitionReferenceId   $refId `
-            -Scope                         $mgScope | Out-Null
-
-        Write-Host "OK" -ForegroundColor Green
+$scanCmd = Get-Command Start-AzPolicyComplianceScan -ErrorAction SilentlyContinue
+if ($scanCmd) {
+    try {
+        Start-AzPolicyComplianceScan -ManagementGroupName $MG_ID | Out-Null
+        Write-Host "  • Policy evaluation scan started for management group '$MG_ID'." -ForegroundColor Green
+    } catch {
+        Write-Warning "  Could not start compliance scan: $($_.Exception.Message)"
     }
+} else {
+    Write-Warning "  Start-AzPolicyComplianceScan cmdlet not found. Install/update Az.PolicyInsights to enable manual policy scan trigger."
+}
+
+# ── Step 5: Trigger remediation ─────────────────────────
+Write-Host "`n[5/5] Starting remediation tasks..." -ForegroundColor Yellow
+
+$refIds = @('enforceOwnerTag', 'enforceCostCodeTag', 'enforceBusinessUnitTag')
+foreach ($refId in $refIds) {
+    $remName = "remediate-$refId-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
+    Write-Host "  • $remName ... " -NoNewline
+
+    Start-AzPolicyRemediation `
+        -Name                          $remName `
+        -PolicyAssignmentId            "$mgScope/providers/Microsoft.Authorization/policyAssignments/$ASSIGNMENT_NAME" `
+        -PolicyDefinitionReferenceId   $refId `
+        -Scope                         $mgScope | Out-Null
+
+    Write-Host "OK" -ForegroundColor Green
 }
 
 Write-Host "`n═══════════════════════════════════════════════════" -ForegroundColor Cyan
