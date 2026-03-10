@@ -21,7 +21,9 @@
           "displayName": "Owner overrides by resource group",
           "description": "Map of RG names to Owner values. Example: {\"rg-dev\": \"DevOpsTeam\"}"
         },
-        "defaultValue": {}
+        "defaultValue": {
+          "disabled": ""
+        }
       },
       "tagValuesByResource": {
         "type": "Object",
@@ -29,7 +31,9 @@
           "displayName": "Owner overrides by specific resource",
           "description": "Map of rgName/resourceName to Owner values. Takes priority over RG overrides. Example: {\"rg-dev/vm-special-01\": \"PlatformTeam\"}"
         },
-        "defaultValue": {}
+        "defaultValue": {
+          "disabled/disabled": ""
+        }
       }
     },
     "policyRule": {

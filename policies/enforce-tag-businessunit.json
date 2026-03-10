@@ -21,7 +21,9 @@
           "displayName": "BusinessUnit overrides by resource group",
           "description": "Map of RG names to BusinessUnit values. Example: {\"rg-dev\": \"Engineering\"}"
         },
-        "defaultValue": {}
+        "defaultValue": {
+          "disabled": ""
+        }
       },
       "tagValuesByResource": {
         "type": "Object",
@@ -29,7 +31,9 @@
           "displayName": "BusinessUnit overrides by specific resource",
           "description": "Map of rgName/resourceName to BusinessUnit values. Takes priority over RG overrides. Example: {\"rg-prod/vm-billing-01\": \"Finance\"}"
         },
-        "defaultValue": {}
+        "defaultValue": {
+          "disabled/disabled": ""
+        }
       }
     },
     "policyRule": {

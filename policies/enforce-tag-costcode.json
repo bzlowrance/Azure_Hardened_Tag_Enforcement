@@ -21,7 +21,9 @@
           "displayName": "CostCode overrides by resource group",
           "description": "Map of RG names to CostCode values. Example: {\"rg-dev\": \"CC-2000-DEV\"}"
         },
-        "defaultValue": {}
+        "defaultValue": {
+          "disabled": ""
+        }
       },
       "tagValuesByResource": {
         "type": "Object",
@@ -29,7 +31,9 @@
           "displayName": "CostCode overrides by specific resource",
           "description": "Map of rgName/resourceName to CostCode values. Takes priority over RG overrides. Example: {\"rg-prod/vm-billing-01\": \"CC-9000-BILLING\"}"
         },
-        "defaultValue": {}
+        "defaultValue": {
+          "disabled/disabled": ""
+        }
       }
     },
     "policyRule": {
