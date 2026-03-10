@@ -341,15 +341,28 @@ $assignContent = $assignResp.Content | ConvertFrom-Json
 $principalId = $assignContent.identity.principalId
 $tagContributorRoleId = "4a9ae827-6dc8-4573-8ac7-8239d42aa03f"
 
-# Check if role assignment already exists before creating
-$existingRole = Get-AzRoleAssignment -ObjectId $principalId -Scope $mgScope -RoleDefinitionId $tagContributorRoleId -ErrorAction SilentlyContinue
-if (-not $existingRole) {
-    New-AzRoleAssignment `
-        -ObjectId          $principalId `
-        -Scope             $mgScope `
-        -RoleDefinitionId  $tagContributorRoleId | Out-Null
+# Wait briefly for managed identity to propagate in AAD
+Start-Sleep -Seconds 10
+
+# Use REST API for role assignment (Az.Resources 9.x cmdlet unreliable in Gov)
+$roleAssignmentId = [guid]::NewGuid().ToString()
+$roleAssignPath = "${mgScope}/providers/Microsoft.Authorization/roleAssignments/${roleAssignmentId}?api-version=2022-04-01"
+$roleAssignBody = @{
+    properties = @{
+        principalId      = $principalId
+        roleDefinitionId = "${mgScope}/providers/Microsoft.Authorization/roleDefinitions/${tagContributorRoleId}"
+        principalType    = 'ServicePrincipal'
+    }
+} | ConvertTo-Json -Depth 10
+
+$roleResp = Invoke-AzRestMethod -Path $roleAssignPath -Method PUT -Payload $roleAssignBody -ErrorAction SilentlyContinue
+if ($roleResp.StatusCode -ge 200 -and $roleResp.StatusCode -lt 300) {
+    Write-Host " OK" -ForegroundColor Green
+} elseif ($roleResp.StatusCode -eq 409) {
+    Write-Host " already exists" -ForegroundColor Green
+} else {
+    Write-Warning " Role assignment returned HTTP $($roleResp.StatusCode). Remediation may fail if the identity lacks Tag Contributor."
 }
-Write-Host " OK" -ForegroundColor Green
 
 # ── Step 4: Trigger policy evaluation scan ─────────────
 Write-Host "`n[4/5] Triggering policy evaluation scan..." -ForegroundColor Yellow
