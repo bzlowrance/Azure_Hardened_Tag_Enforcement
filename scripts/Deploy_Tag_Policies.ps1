@@ -57,6 +57,10 @@ $POLICY_OWNER       = $envVars['POLICY_DEF_OWNER']
 $POLICY_COSTCODE    = $envVars['POLICY_DEF_COSTCODE']
 $POLICY_BU          = $envVars['POLICY_DEF_BUSINESSUNIT']
 
+if ($ASSIGNMENT_NAME.Length -gt 24) {
+    Write-Error "ASSIGNMENT_NAME '$ASSIGNMENT_NAME' is $($ASSIGNMENT_NAME.Length) chars; Azure Policy requires 24 or fewer characters."
+}
+
 # ── Resolve Azure region ────────────────────────────────
 function Resolve-AzureLocation {
     param([string]$Preferred)
