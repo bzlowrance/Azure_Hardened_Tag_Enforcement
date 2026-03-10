@@ -355,15 +355,49 @@ Write-Host " OK" -ForegroundColor Green
 Write-Host "`n[4/5] Triggering policy evaluation scan..." -ForegroundColor Yellow
 
 $scanCmd = Get-Command Start-AzPolicyComplianceScan -ErrorAction SilentlyContinue
+$scanStarted = $false
 if ($scanCmd) {
     try {
-        Start-AzPolicyComplianceScan -ManagementGroupName $MG_ID | Out-Null
-        Write-Host "  • Policy evaluation scan started for management group '$MG_ID'." -ForegroundColor Green
+        $scanParamNames = @($scanCmd.Parameters.Keys)
+        if ($scanParamNames -contains 'ManagementGroupName') {
+            Start-AzPolicyComplianceScan -ManagementGroupName $MG_ID | Out-Null
+            $scanStarted = $true
+        } elseif ($scanParamNames -contains 'Scope') {
+            Start-AzPolicyComplianceScan -Scope $mgScope | Out-Null
+            $scanStarted = $true
+        } elseif ($scanParamNames -contains 'ResourceId') {
+            Start-AzPolicyComplianceScan -ResourceId $mgScope | Out-Null
+            $scanStarted = $true
+        }
+
+        if ($scanStarted) {
+            Write-Host "  • Policy evaluation scan started for management group '$MG_ID'." -ForegroundColor Green
+        } else {
+            Write-Warning "  Start-AzPolicyComplianceScan is installed but does not expose a management group compatible parameter set."
+        }
     } catch {
-        Write-Warning "  Could not start compliance scan: $($_.Exception.Message)"
+        Write-Warning "  Could not start compliance scan via cmdlet: $($_.Exception.Message)"
     }
 } else {
-    Write-Warning "  Start-AzPolicyComplianceScan cmdlet not found. Install/update Az.PolicyInsights to enable manual policy scan trigger."
+    Write-Warning "  Start-AzPolicyComplianceScan cmdlet not found. Trying REST fallback."
+}
+
+if (-not $scanStarted) {
+    try {
+        $triggerPathTemplate = "/providers/Microsoft.Management/managementGroups/$MG_ID/providers/Microsoft.PolicyInsights/policyStates/latest/triggerEvaluation?api-version={apiVersion}"
+        $triggerApiVersions = @('2019-10-01', '2018-07-01-preview')
+        $triggerResp = Invoke-AzRestWithApiFallback -PathTemplate $triggerPathTemplate -Method POST -ApiVersions $triggerApiVersions
+        if ($triggerResp.StatusCode -ge 200 -and $triggerResp.StatusCode -lt 300) {
+            $scanStarted = $true
+            Write-Host "  • Policy evaluation scan started via REST for management group '$MG_ID'." -ForegroundColor Green
+        }
+    } catch {
+        Write-Warning "  Could not start compliance scan via REST fallback: $($_.Exception.Message)"
+    }
+}
+
+if (-not $scanStarted) {
+    Write-Warning "  Policy evaluation scan could not be started automatically. Remediation tasks will still run."
 }
 
 # ── Step 5: Trigger remediation ─────────────────────────
