@@ -122,12 +122,23 @@ if (-not $Force) {
 if (-not $SkipPolicyCleanup) {
     Write-Host "`n[1/6] Removing policy assignment '$ASSIGNMENT_NAME'..." -ForegroundColor Yellow
 
+    $policyApiVersions = @('2023-04-01', '2022-06-01', '2021-06-01')
+
     try {
-        $existing = Get-AzPolicyAssignment -Name $ASSIGNMENT_NAME -Scope $mgScope -ErrorAction SilentlyContinue
-        if ($existing) {
+        # Use REST to check for the assignment (cmdlet Identity property unreliable in Az.Resources 9.x)
+        $assignPath = "${mgScope}/providers/Microsoft.Authorization/policyAssignments/${ASSIGNMENT_NAME}"
+        $assignGetResp = $null
+        foreach ($apiVer in $policyApiVersions) {
+            try {
+                $assignGetResp = Invoke-AzRestMethod -Path "${assignPath}?api-version=${apiVer}" -Method GET -ErrorAction Stop
+                if ($assignGetResp.StatusCode -eq 200) { break }
+            } catch { continue }
+        }
+
+        if ($assignGetResp -and $assignGetResp.StatusCode -eq 200) {
             # Remove any active remediation tasks first
-            $remediations = Get-AzPolicyRemediation -Scope $mgScope -ErrorAction SilentlyContinue |
-                Where-Object { $_.PolicyAssignmentId -like "*$ASSIGNMENT_NAME*" }
+            $remediations = @(Get-AzPolicyRemediation -Scope $mgScope -ErrorAction SilentlyContinue |
+                Where-Object { $_.PolicyAssignmentId -like "*$ASSIGNMENT_NAME*" })
             foreach ($rem in $remediations) {
                 Write-Host "  • Stopping remediation: $($rem.Name) ... " -NoNewline
                 Stop-AzPolicyRemediation -Name $rem.Name -Scope $mgScope -ErrorAction SilentlyContinue | Out-Null
@@ -135,8 +146,12 @@ if (-not $SkipPolicyCleanup) {
                 Write-Host "removed" -ForegroundColor Green
             }
 
-            # Remove role assignment for the managed identity
-            $principalId = $existing.Identity.PrincipalId
+            # Remove role assignment for the managed identity (read from REST response)
+            $assignObj = $assignGetResp.Content | ConvertFrom-Json
+            $principalId = $null
+            if ($assignObj.identity -and $assignObj.identity.principalId) {
+                $principalId = $assignObj.identity.principalId
+            }
             if ($principalId) {
                 Write-Host "  • Removing role assignments for managed identity..." -NoNewline
                 Get-AzRoleAssignment -ObjectId $principalId -Scope $mgScope -ErrorAction SilentlyContinue |
@@ -144,8 +159,25 @@ if (-not $SkipPolicyCleanup) {
                 Write-Host " done" -ForegroundColor Green
             }
 
-            Remove-AzPolicyAssignment -Name $ASSIGNMENT_NAME -Scope $mgScope | Out-Null
-            Write-Host "  • Assignment removed." -ForegroundColor Green
+            # Delete assignment via REST
+            $deleted = $false
+            foreach ($apiVer in $policyApiVersions) {
+                try {
+                    $delResp = Invoke-AzRestMethod -Path "${assignPath}?api-version=${apiVer}" -Method DELETE -ErrorAction Stop
+                    if ($delResp.StatusCode -ge 200 -and $delResp.StatusCode -lt 300) {
+                        $deleted = $true
+                        break
+                    }
+                } catch { continue }
+            }
+            if ($deleted) {
+                Write-Host "  • Assignment removed." -ForegroundColor Green
+            } else {
+                Write-Warning "  Could not delete assignment via REST."
+            }
+
+            # Wait for deletion to propagate before removing initiative
+            Start-Sleep -Seconds 5
         } else {
             Write-Host "  • Assignment not found, skipping." -ForegroundColor DarkGray
         }
@@ -157,13 +189,26 @@ if (-not $SkipPolicyCleanup) {
     Write-Host "`n[2/6] Removing initiative '$INITIATIVE_NAME'..." -ForegroundColor Yellow
 
     try {
-        $initId = "$mgScope/providers/Microsoft.Authorization/policySetDefinitions/$INITIATIVE_NAME"
-        $existing = Get-AzPolicySetDefinition -Id $initId -ErrorAction SilentlyContinue
-        if ($existing) {
-            Remove-AzPolicySetDefinition -Id $initId -Force | Out-Null
+        $initPath = "${mgScope}/providers/Microsoft.Authorization/policySetDefinitions/${INITIATIVE_NAME}"
+        $deleted = $false
+        foreach ($apiVer in $policyApiVersions) {
+            try {
+                $resp = Invoke-AzRestMethod -Path "${initPath}?api-version=${apiVer}" -Method DELETE -ErrorAction Stop
+                if ($resp.StatusCode -ge 200 -and $resp.StatusCode -lt 300) {
+                    $deleted = $true
+                    break
+                } elseif ($resp.StatusCode -eq 404) {
+                    Write-Host "  • Initiative not found, skipping." -ForegroundColor DarkGray
+                    $deleted = $true  # not an error
+                    break
+                }
+            } catch { continue }
+        }
+        if ($deleted -and $resp.StatusCode -ne 404) {
             Write-Host "  • Initiative removed." -ForegroundColor Green
-        } else {
-            Write-Host "  • Initiative not found, skipping." -ForegroundColor DarkGray
+            Start-Sleep -Seconds 5
+        } elseif (-not $deleted) {
+            Write-Warning "  Could not remove initiative."
         }
     } catch {
         Write-Warning "  Could not remove initiative: $($_.Exception.Message)"
@@ -174,13 +219,25 @@ if (-not $SkipPolicyCleanup) {
 
     foreach ($defName in @($POLICY_OWNER, $POLICY_COSTCODE, $POLICY_BU)) {
         try {
-            $defId = "$mgScope/providers/Microsoft.Authorization/policyDefinitions/$defName"
-            $existing = Get-AzPolicyDefinition -Id $defId -ErrorAction SilentlyContinue
-            if ($existing) {
-                Remove-AzPolicyDefinition -Id $defId -Force | Out-Null
+            $defPath = "${mgScope}/providers/Microsoft.Authorization/policyDefinitions/${defName}"
+            $deleted = $false
+            foreach ($apiVer in $policyApiVersions) {
+                try {
+                    $resp = Invoke-AzRestMethod -Path "${defPath}?api-version=${apiVer}" -Method DELETE -ErrorAction Stop
+                    if ($resp.StatusCode -ge 200 -and $resp.StatusCode -lt 300) {
+                        $deleted = $true
+                        break
+                    } elseif ($resp.StatusCode -eq 404) {
+                        Write-Host "  • $defName not found, skipping." -ForegroundColor DarkGray
+                        $deleted = $true
+                        break
+                    }
+                } catch { continue }
+            }
+            if ($deleted -and $resp.StatusCode -ne 404) {
                 Write-Host "  • $defName removed." -ForegroundColor Green
-            } else {
-                Write-Host "  • $defName not found, skipping." -ForegroundColor DarkGray
+            } elseif (-not $deleted) {
+                Write-Warning "  Could not remove $defName."
             }
         } catch {
             Write-Warning "  Could not remove $defName`: $($_.Exception.Message)"
@@ -200,30 +257,34 @@ if (-not $SkipResourceGroups) {
         Set-AzContext -SubscriptionId $subscriptionId -Force | Out-Null
 
         # Also collect any RGs created from resource-level override keys
+        # (these keys now contain the full RG name including the prefix)
         $paramsFilePath = Join-Path $repoRoot $envVars['ASSIGNMENT_PARAMETERS_FILE']
-        $extraRgs = @()
+        $extraRgNames = @()
         if (Test-Path $paramsFilePath) {
             $params = Get-Content $paramsFilePath -Raw | ConvertFrom-Json
             foreach ($prop in @('ownerResourceOverrides', 'costCodeResourceOverrides', 'businessUnitResourceOverrides')) {
                 if ($params.PSObject.Properties[$prop]) {
                     $params.$prop.PSObject.Properties | ForEach-Object {
                         $rg = ($_.Name -split '/', 2)[0]
-                        if ($extraRgs -notcontains $rg) { $extraRgs += $rg }
+                        if ($rg -ne 'disabled' -and $rg -ne 'disabled/disabled' -and $extraRgNames -notcontains $rg) {
+                            $extraRgNames += $rg
+                        }
                     }
                 }
             }
         }
 
+        # Build full RG names from the .env list (prefix-name)
+        $standardRgNames = @($resourceGroups | ForEach-Object { "${rgPrefix}-${_}" })
+
         # Merge all RG names (deduplicated)
-        $allRgs = ($resourceGroups + $extraRgs) | Sort-Object -Unique
+        $allRgNames = ($standardRgNames + $extraRgNames) | Sort-Object -Unique
 
         $jobs = @()
-        foreach ($rg in $allRgs) {
-            $rgName = "${rgPrefix}-${rg}"
+        foreach ($rgName in $allRgNames) {
             $existing = Get-AzResourceGroup -Name $rgName -ErrorAction SilentlyContinue
             if ($existing) {
                 Write-Host "  • $rgName ... " -NoNewline
-                # Start removal as a background job for parallelism
                 $jobs += Remove-AzResourceGroup -Name $rgName -Force -AsJob
                 Write-Host "deleting (async)" -ForegroundColor Yellow
             } else {

@@ -335,7 +335,7 @@ $resourceOverrideKeys = @()
 foreach ($prop in @('ownerResourceOverrides', 'costCodeResourceOverrides', 'businessUnitResourceOverrides')) {
     if ($params.PSObject.Properties[$prop]) {
         $params.$prop.PSObject.Properties | ForEach-Object {
-            if ($resourceOverrideKeys -notcontains $_.Name) {
+            if ($_.Name -ne 'disabled/disabled' -and $_.Name -ne 'disabled' -and $resourceOverrideKeys -notcontains $_.Name) {
                 $resourceOverrideKeys += $_.Name
             }
         }
@@ -411,9 +411,10 @@ foreach ($rg in $resourceGroups) {
 }
 
 # 5b: Named resources from resource-level override maps
+# Override keys now contain the full RG name (e.g. hardened-tags-rg-prod/vm-billing-01)
 foreach ($key in $resourceOverrideKeys) {
     $parts        = $key -split '/', 2
-    $rgName       = "${rgPrefix}-$($parts[0])"
+    $rgName       = $parts[0]
     $resourceName = $parts[1]
 
     $storageName = ($resourceName -replace '[^a-zA-Z0-9]', '').ToLower()
