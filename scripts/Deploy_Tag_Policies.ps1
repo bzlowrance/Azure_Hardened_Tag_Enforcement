@@ -354,9 +354,22 @@ Write-Host " OK" -ForegroundColor Green
 # ── Step 4: Trigger policy evaluation scan ─────────────
 Write-Host "`n[4/5] Triggering policy evaluation scan..." -ForegroundColor Yellow
 
-$scanCmd = Get-Command Start-AzPolicyComplianceScan -ErrorAction SilentlyContinue
 $scanStarted = $false
-if ($scanCmd) {
+# Prefer REST first for cross-version reliability in Gov/sovereign clouds.
+try {
+    $triggerPathTemplate = "/providers/Microsoft.Management/managementGroups/$MG_ID/providers/Microsoft.PolicyInsights/policyStates/latest/triggerEvaluation?api-version={apiVersion}"
+    $triggerApiVersions = @('2019-10-01', '2018-07-01-preview')
+    $triggerResp = Invoke-AzRestWithApiFallback -PathTemplate $triggerPathTemplate -Method POST -ApiVersions $triggerApiVersions
+    if ($triggerResp.StatusCode -ge 200 -and $triggerResp.StatusCode -lt 300) {
+        $scanStarted = $true
+        Write-Host "  • Policy evaluation scan started via REST for management group '$MG_ID'." -ForegroundColor Green
+    }
+} catch {
+    Write-Warning "  Could not start compliance scan via REST: $($_.Exception.Message)"
+}
+
+$scanCmd = Get-Command Start-AzPolicyComplianceScan -ErrorAction SilentlyContinue
+if (-not $scanStarted -and $scanCmd) {
     try {
         $scanParamNames = @($scanCmd.Parameters.Keys)
         if ($scanParamNames -contains 'ManagementGroupName') {
@@ -377,22 +390,6 @@ if ($scanCmd) {
         }
     } catch {
         Write-Warning "  Could not start compliance scan via cmdlet: $($_.Exception.Message)"
-    }
-} else {
-    Write-Warning "  Start-AzPolicyComplianceScan cmdlet not found. Trying REST fallback."
-}
-
-if (-not $scanStarted) {
-    try {
-        $triggerPathTemplate = "/providers/Microsoft.Management/managementGroups/$MG_ID/providers/Microsoft.PolicyInsights/policyStates/latest/triggerEvaluation?api-version={apiVersion}"
-        $triggerApiVersions = @('2019-10-01', '2018-07-01-preview')
-        $triggerResp = Invoke-AzRestWithApiFallback -PathTemplate $triggerPathTemplate -Method POST -ApiVersions $triggerApiVersions
-        if ($triggerResp.StatusCode -ge 200 -and $triggerResp.StatusCode -lt 300) {
-            $scanStarted = $true
-            Write-Host "  • Policy evaluation scan started via REST for management group '$MG_ID'." -ForegroundColor Green
-        }
-    } catch {
-        Write-Warning "  Could not start compliance scan via REST fallback: $($_.Exception.Message)"
     }
 }
 
