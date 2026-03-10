@@ -75,6 +75,8 @@ Azure_Hardened_Tag_Enforcement/
 ├── scripts/
 │   ├── Stage_Test_Infrastructure.ps1  # Create MG, subscription, RGs, resources
 │   ├── Deploy_Tag_Policies.ps1        # Deploy definitions, initiative, assignment
+│   ├── Deploy_Auto_Remediation.ps1    # Set up recurring auto-remediation
+│   ├── AutoRemediation_Runbook.ps1    # Automation Account runbook (imported automatically)
 │   ├── Validate_Tag_Enforcement.ps1   # Scan resources and report compliance
 │   ├── Modify_Tags.ps1               # Apply non-compliant tags to test policy
 │   └── Destroy_Test_Infrastructure.ps1# Tear down all test resources
@@ -195,6 +197,41 @@ After creating or updating the assignment, run a remediation task:
 2. Select the assignment
 3. Choose the policies to remediate
 4. Submit
+
+## Auto-remediation
+
+The `modify` policy effect automatically corrects tags on resource **create and update** operations. For pre-existing resources (or resources that haven't been modified since the policy was assigned), a recurring remediation job ensures they are caught.
+
+`Deploy_Auto_Remediation.ps1` creates:
+
+| Resource | Purpose |
+|---|---|
+| **Azure Automation Account** | Hosts the runbook with a system-assigned managed identity |
+| **PowerShell Runbook** | Triggers policy evaluation scan + remediation tasks |
+| **Recurring Schedule** | Runs every N hours (configurable via `AUTOMATION_SCHEDULE_HOURS` in `.env`) |
+| **Role Assignments** | Resource Policy Contributor + Tag Contributor at MG scope |
+
+### Setup
+
+```powershell
+# After deploying the policies:
+.\scripts\Deploy_Auto_Remediation.ps1
+```
+
+### Configuration (`.env`)
+
+| Variable | Default | Description |
+|---|---|---|
+| `AUTOMATION_ACCOUNT_NAME` | `aa-tag-remediation` | Name of the Automation Account |
+| `AUTOMATION_RG_NAME` | `rg-tag-automation` | Resource group for the Automation Account |
+| `AUTOMATION_SCHEDULE_HOURS` | `6` | How often the runbook runs (in hours) |
+
+### How it works
+
+1. Authenticates using the Automation Account's managed identity
+2. Triggers a policy evaluation scan on each subscription under the management group
+3. Creates remediation tasks for all three tag policies
+4. Repeats on the configured schedule
 
 ## Cleanup
 
