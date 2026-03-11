@@ -71,13 +71,23 @@ $refIds = @('enforceOwnerTag', 'enforceCostCodeTag', 'enforceBusinessUnitTag', '
 foreach ($refId in $refIds) {
     $remName = "auto-remediate-$refId-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
     try {
-        Start-AzPolicyRemediation `
-            -Name                        $remName `
-            -PolicyAssignmentId          $assignmentId `
-            -PolicyDefinitionReferenceId $refId `
-            -Scope                       $mgScope -ErrorAction Stop | Out-Null
+        # Use REST API — Start-AzPolicyRemediation can fail with 403 in Gov even when roles are assigned
+        $remPath = "${mgScope}/providers/Microsoft.PolicyInsights/remediations/${remName}?api-version=2021-10-01"
+        $remBody = @{
+            properties = @{
+                policyAssignmentId          = $assignmentId
+                policyDefinitionReferenceId = $refId
+            }
+        } | ConvertTo-Json -Depth 10
 
-        Write-Output "  Started: $remName"
+        $remResp = Invoke-AzRestMethod -Path $remPath -Method PUT -Payload $remBody -ErrorAction Stop
+        if ($remResp.StatusCode -ge 200 -and $remResp.StatusCode -lt 300) {
+            Write-Output "  Started: $remName"
+        } else {
+            $errContent = $remResp.Content | ConvertFrom-Json -ErrorAction SilentlyContinue
+            $errMsg = if ($errContent -and $errContent.error) { $errContent.error.message } else { "HTTP $($remResp.StatusCode)" }
+            Write-Warning "  Failed to start remediation '$remName': $errMsg"
+        }
     } catch {
         Write-Warning "  Failed to start remediation '$remName': $($_.Exception.Message)"
     }
