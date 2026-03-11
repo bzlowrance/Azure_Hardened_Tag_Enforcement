@@ -157,7 +157,7 @@ Write-Host " Assignment       : $ASSIGNMENT_NAME" -ForegroundColor Cyan
 Write-Host "═══════════════════════════════════════════════════" -ForegroundColor Cyan
 
 # ── Step 1: Create / update policy definitions ──────────
-Write-Host "`n[1/4] Creating policy definitions..." -ForegroundColor Yellow
+Write-Host "`n[1/5] Creating policy definitions..." -ForegroundColor Yellow
 
 $policyDefs = @(
     @{ Name = $POLICY_OWNER;    File = "enforce-tag-owner.json" },
@@ -233,7 +233,7 @@ if (-not $allFound) {
 Write-Host "  All policy definitions verified." -ForegroundColor Green
 
 # ── Step 2: Create / update the initiative ──────────────
-Write-Host "`n[2/4] Creating initiative..." -ForegroundColor Yellow
+Write-Host "`n[2/5] Creating initiative..." -ForegroundColor Yellow
 
 $initFile = Join-Path $policiesDir 'initiative.json'
 $initJson = Get-Content $initFile -Raw
@@ -266,7 +266,7 @@ if ($initResp.StatusCode -ge 200 -and $initResp.StatusCode -lt 300) {
 }
 
 # ── Step 3: Create / update the assignment ──────────────
-Write-Host "`n[3/4] Creating assignment..." -ForegroundColor Yellow
+Write-Host "`n[3/5] Creating assignment..." -ForegroundColor Yellow
 
 if (-not (Test-Path $paramsFilePath)) {
     Write-Error "Assignment parameters file not found: $paramsFilePath"

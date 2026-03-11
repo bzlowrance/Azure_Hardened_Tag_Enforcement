@@ -8,8 +8,10 @@
       2. Subscription — creates a new "tag-validation-test" subscription
          (or uses an existing one if STAGING_SUBSCRIPTION_ID is set to a GUID).
       3. Places the subscription under the management group.
-      4. Resource groups listed in .env (STAGING_RESOURCE_GROUPS).
-      5. Lightweight Storage Accounts per resource group and for every
+      4. Registers required resource providers (PolicyInsights, Authorization,
+         ManagedIdentity, Storage, Resources).
+      5. Resource groups listed in .env (STAGING_RESOURCE_GROUPS).
+      6. Lightweight Storage Accounts per resource group and for every
          resource-level override key in the assignment parameters file.
 
     Resources are created WITHOUT any enforced tags — tag application and
@@ -124,7 +126,7 @@ Write-Host " Location         : $(if ($locationPref -and $locationPref -ne 'AUTO
 Write-Host "═══════════════════════════════════════════════════════" -ForegroundColor Cyan
 
 # ── Step 1: Create management group ─────────────────────
-Write-Host "`n[1/5] Creating management group '$MG_ID'..." -ForegroundColor Yellow
+Write-Host "`n[1/6] Creating management group '$MG_ID'..." -ForegroundColor Yellow
 
 $existingMg = Get-AzManagementGroup -GroupId $MG_ID -ErrorAction SilentlyContinue
 if ($existingMg) {
@@ -135,7 +137,7 @@ if ($existingMg) {
 }
 
 # ── Step 2: Create or resolve subscription ──────────────
-Write-Host "`n[2/5] Provisioning subscription..." -ForegroundColor Yellow
+Write-Host "`n[2/6] Provisioning subscription..." -ForegroundColor Yellow
 
 if ($subscriptionId -eq 'CREATE_NEW') {
     if (-not $subscriptionName) {
@@ -276,7 +278,7 @@ if ($subscriptionId -eq 'CREATE_NEW') {
 }
 
 # ── Step 3: Move subscription under management group ────
-Write-Host "`n[3/5] Placing subscription under management group '$MG_ID'..." -ForegroundColor Yellow
+Write-Host "`n[3/6] Placing subscription under management group '$MG_ID'..." -ForegroundColor Yellow
 
 $mgSubs = Get-AzManagementGroupSubscription -GroupId $MG_ID -ErrorAction SilentlyContinue
 $alreadyUnderMg = $mgSubs | Where-Object { $_.Id -like "*$subscriptionId*" }
@@ -353,8 +355,42 @@ function New-StorageName {
     return $name
 }
 
-# ── Step 4: Create resource groups ──────────────────────
-Write-Host "`n[4/5] Creating resource groups..." -ForegroundColor Yellow
+# ── Step 4: Register required resource providers ────────
+Write-Host "`n[4/6] Registering required resource providers..." -ForegroundColor Yellow
+
+$requiredProviders = @(
+    'Microsoft.PolicyInsights'    # Policy compliance evaluation & remediation
+    'Microsoft.Authorization'     # Policy definitions, assignments, role assignments
+    'Microsoft.ManagedIdentity'   # Managed identities for policy remediation
+    'Microsoft.Storage'           # Storage accounts used in test resources
+    'Microsoft.Resources'         # Resource groups, deployments
+)
+
+foreach ($ns in $requiredProviders) {
+    $provider = Get-AzResourceProvider -ProviderNamespace $ns -ErrorAction SilentlyContinue
+    if ($provider -and $provider[0].RegistrationState -eq 'Registered') {
+        Write-Host "  • $ns — already registered" -ForegroundColor DarkGray
+        continue
+    }
+    Write-Host "  • $ns — registering..." -NoNewline
+    Register-AzResourceProvider -ProviderNamespace $ns | Out-Null
+    $maxWait = 120
+    $elapsed = 0
+    $state   = 'Registering'
+    while ($elapsed -lt $maxWait) {
+        $state = (Get-AzResourceProvider -ProviderNamespace $ns)[0].RegistrationState
+        if ($state -eq 'Registered') { break }
+        Start-Sleep -Seconds 5
+        $elapsed += 5
+    }
+    if ($state -ne 'Registered') {
+        Write-Error "$ns provider did not register within ${maxWait}s. Current state: $state"
+    }
+    Write-Host " registered" -ForegroundColor Green
+}
+
+# ── Step 5: Create resource groups ──────────────────────
+Write-Host "`n[5/6] Creating resource groups..." -ForegroundColor Yellow
 
 foreach ($rg in $resourceGroups) {
     $rgName = "${rgPrefix}-${rg}"
@@ -368,30 +404,10 @@ foreach ($rg in $resourceGroups) {
     }
 }
 
-# ── Step 5: Create storage accounts ────────────────────
-Write-Host "`n[5/5] Creating storage accounts..." -ForegroundColor Yellow
+# ── Step 6: Create storage accounts ────────────────────
+Write-Host "`n[6/6] Creating storage accounts..." -ForegroundColor Yellow
 
-# Ensure the Microsoft.Storage resource provider is registered
-$storageProvider = Get-AzResourceProvider -ProviderNamespace Microsoft.Storage -ErrorAction SilentlyContinue
-if (-not $storageProvider -or $storageProvider[0].RegistrationState -ne 'Registered') {
-    Write-Host "  • Registering Microsoft.Storage resource provider..." -NoNewline
-    Register-AzResourceProvider -ProviderNamespace Microsoft.Storage | Out-Null
-    # Wait for registration to complete
-    $maxWait = 120
-    $elapsed = 0
-    while ($elapsed -lt $maxWait) {
-        $state = (Get-AzResourceProvider -ProviderNamespace Microsoft.Storage)[0].RegistrationState
-        if ($state -eq 'Registered') { break }
-        Start-Sleep -Seconds 5
-        $elapsed += 5
-    }
-    if ($state -ne 'Registered') {
-        Write-Error "Microsoft.Storage provider did not register within ${maxWait}s. Current state: $state"
-    }
-    Write-Host " registered" -ForegroundColor Green
-}
-
-# 5a: Baseline storage account per RG
+# 6a: Baseline storage account per RG
 foreach ($rg in $resourceGroups) {
     $rgName = "${rgPrefix}-${rg}"
     $storageName = New-StorageName -BaseName "stg$($rg -replace '-','')"
@@ -410,7 +426,7 @@ foreach ($rg in $resourceGroups) {
     Write-Host "created" -ForegroundColor Green
 }
 
-# 5b: Named resources from resource-level override maps
+# 6b: Named resources from resource-level override maps
 # Override keys now contain the full RG name (e.g. hardened-tags-rg-prod/vm-billing-01)
 foreach ($key in $resourceOverrideKeys) {
     $parts        = $key -split '/', 2
