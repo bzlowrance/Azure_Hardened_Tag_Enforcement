@@ -1,12 +1,13 @@
 <#
 .SYNOPSIS
-    Validates that all resources under the management group have the correct
-    Owner, CostCode, and BusinessUnit tag values.
+    Validates that all resources and resource groups under the management group
+    have the correct Owner, CostCode, and BusinessUnit tag values.
 
 .DESCRIPTION
-    Scans every resource in every subscription under the management group
-    and compares current tag values against the expected values from the
-    assignment parameters file (using the same three-tier resolution logic).
+    Scans every resource group and resource in every subscription under the
+    management group and compares current tag values against the expected values
+    from the assignment parameters file (using the same resolution logic as the
+    policies).
 
     Outputs a summary report to the console and optionally exports a CSV
     of all non-compliant resources.
@@ -113,6 +114,17 @@ function Resolve-TagValue {
     return $Config.Default
 }
 
+function Resolve-RgTagValue {
+    param(
+        [hashtable]$Config,
+        [string]$ResourceGroupName
+    )
+    if ($Config.RgOverrides.ContainsKey($ResourceGroupName)) {
+        return $Config.RgOverrides[$ResourceGroupName]
+    }
+    return $Config.Default
+}
+
 # ── Gather subscriptions ────────────────────────────────
 if ($SubscriptionId) {
     $subscriptions = @(Get-AzSubscription -SubscriptionId $SubscriptionId)
@@ -132,11 +144,59 @@ Write-Host "══════════════════════�
 $violations    = [System.Collections.Generic.List[PSCustomObject]]::new()
 $totalResources = 0
 $compliant      = 0
+$totalRgs       = 0
+$compliantRgs   = 0
 
 foreach ($sub in $subscriptions) {
     Write-Host "`n── Subscription: $($sub.Name) ($($sub.Id)) ──" -ForegroundColor Yellow
     Set-AzContext -SubscriptionId $sub.Id -Force | Out-Null
 
+    # ── Validate resource groups ────────────────────────
+    $resourceGroups = @(Get-AzResourceGroup)
+    Write-Host "  Scanning $($resourceGroups.Count) resource groups..." -ForegroundColor DarkGray
+
+    foreach ($rg in $resourceGroups) {
+        $totalRgs++
+        $rgName      = $rg.ResourceGroupName
+        $currentTags = $rg.Tags
+        if ($null -eq $currentTags) { $currentTags = @{} }
+
+        $rgCompliant = $true
+
+        foreach ($cfg in $tagConfig) {
+            $expected = Resolve-RgTagValue -Config $cfg -ResourceGroupName $rgName
+            $current  = $currentTags[$cfg.TagName]
+
+            $issue = $null
+            if ($null -eq $current -or $current -eq '') {
+                $issue = 'Missing'
+            } elseif ($current -ne $expected) {
+                $issue = 'Wrong value'
+            }
+
+            if ($issue) {
+                $rgCompliant = $false
+                $violations.Add([PSCustomObject]@{
+                    Subscription      = $sub.Name
+                    SubscriptionId    = $sub.Id
+                    ResourceGroup     = $rgName
+                    ResourceName      = '(resource group)'
+                    ResourceType      = 'Microsoft.Resources/subscriptions/resourceGroups'
+                    ResourceId        = $rg.ResourceId
+                    Tag               = $cfg.TagName
+                    Issue             = $issue
+                    CurrentValue      = if ($current) { $current } else { '(none)' }
+                    ExpectedValue     = $expected
+                })
+            }
+        }
+
+        if ($rgCompliant) {
+            $compliantRgs++
+        }
+    }
+
+    # ── Validate resources ──────────────────────────────
     $resources = Get-AzResource
 
     foreach ($resource in $resources) {
@@ -184,13 +244,17 @@ foreach ($sub in $subscriptions) {
 }
 
 # ── Summary ─────────────────────────────────────────────
-$nonCompliantResources = @($violations | Select-Object -Property ResourceId -Unique).Count
+$nonCompliantResources = @($violations | Where-Object { $_.ResourceType -ne 'Microsoft.Resources/subscriptions/resourceGroups' } | Select-Object -Property ResourceId -Unique).Count
+$nonCompliantRgs      = @($violations | Where-Object { $_.ResourceType -eq 'Microsoft.Resources/subscriptions/resourceGroups' } | Select-Object -Property ResourceId -Unique).Count
 
 Write-Host "`n═══════════════════════════════════════════════════════" -ForegroundColor Cyan
 Write-Host " Validation Results" -ForegroundColor Cyan
 Write-Host "═══════════════════════════════════════════════════════" -ForegroundColor Cyan
-Write-Host "  Total resources scanned : $totalResources"
-Write-Host "  Compliant               : $compliant" -ForegroundColor Green
+Write-Host "  Resource groups scanned : $totalRgs"
+Write-Host "  Compliant RGs           : $compliantRgs" -ForegroundColor Green
+Write-Host "  Non-compliant RGs       : $nonCompliantRgs" -ForegroundColor $(if ($nonCompliantRgs -gt 0) { 'Red' } else { 'Green' })
+Write-Host "  Resources scanned       : $totalResources"
+Write-Host "  Compliant resources     : $compliant" -ForegroundColor Green
 Write-Host "  Non-compliant resources : $nonCompliantResources" -ForegroundColor $(if ($nonCompliantResources -gt 0) { 'Red' } else { 'Green' })
 Write-Host "  Total tag violations    : $($violations.Count)" -ForegroundColor $(if ($violations.Count -gt 0) { 'Red' } else { 'Green' })
 
