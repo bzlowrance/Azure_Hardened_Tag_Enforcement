@@ -11,8 +11,8 @@
   },
   "ownerResourceOverrides": {
     "disabled/disabled": "",
-    "hardened-tags-rg-dev/vm-special-01": "Alex Rivera",
-    "hardened-tags-rg-shared/sql-finance-db": "Rachel Kim"
+    "hardened-tags-rg-dev/vmspecial01": "Alex Rivera",
+    "hardened-tags-rg-shared/sqlfinancedb": "Rachel Kim"
   },
 
   "defaultCostCode": "CC-1000",
@@ -24,8 +24,8 @@
   },
   "costCodeResourceOverrides": {
     "disabled/disabled": "",
-    "hardened-tags-rg-prod/vm-billing-01": "CC-9000-BILLING",
-    "hardened-tags-rg-data/storage-archive": "CC-4500-ARCHIVE"
+    "hardened-tags-rg-prod/vmbilling01": "CC-9000-BILLING",
+    "hardened-tags-rg-data/storagearchive": "CC-4500-ARCHIVE"
   },
 
   "defaultBusinessUnit": "Engineering",
@@ -37,7 +37,7 @@
   },
   "businessUnitResourceOverrides": {
     "disabled/disabled": "",
-    "hardened-tags-rg-prod/vm-billing-01": "Finance",
-    "hardened-tags-rg-prod/app-recruiting": "HumanResources"
+    "hardened-tags-rg-prod/vmbilling01": "Finance",
+    "hardened-tags-rg-prod/apprecruiting": "HumanResources"
   }
 }
