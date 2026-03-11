@@ -5,7 +5,7 @@
     "mode": "Indexed",
     "metadata": {
       "category": "Tags",
-      "version": "2.0.0"
+      "version": "3.0.0"
     },
     "parameters": {
       "defaultTagValue": {
@@ -44,48 +44,8 @@
             "exists": "false"
           },
           {
-            "allOf": [
-              {
-                "value": "[contains(parameters('tagValuesByResource'), concat(resourceGroup().name, '/', field('name')))]",
-                "equals": true
-              },
-              {
-                "field": "tags['CostCode']",
-                "notEquals": "[parameters('tagValuesByResource')[concat(resourceGroup().name, '/', field('name'))]]"
-              }
-            ]
-          },
-          {
-            "allOf": [
-              {
-                "value": "[contains(parameters('tagValuesByResource'), concat(resourceGroup().name, '/', field('name')))]",
-                "equals": false
-              },
-              {
-                "value": "[contains(parameters('tagValuesByResourceGroup'), resourceGroup().name)]",
-                "equals": true
-              },
-              {
-                "field": "tags['CostCode']",
-                "notEquals": "[parameters('tagValuesByResourceGroup')[resourceGroup().name]]"
-              }
-            ]
-          },
-          {
-            "allOf": [
-              {
-                "value": "[contains(parameters('tagValuesByResource'), concat(resourceGroup().name, '/', field('name')))]",
-                "equals": false
-              },
-              {
-                "value": "[contains(parameters('tagValuesByResourceGroup'), resourceGroup().name)]",
-                "equals": false
-              },
-              {
-                "field": "tags['CostCode']",
-                "notEquals": "[parameters('defaultTagValue')]"
-              }
-            ]
+            "field": "tags['CostCode']",
+            "notEquals": "[if(contains(parameters('tagValuesByResource'), concat(resourceGroup().name, '/', field('name'))), parameters('tagValuesByResource')[concat(resourceGroup().name, '/', field('name'))], if(contains(parameters('tagValuesByResourceGroup'), resourceGroup().name), parameters('tagValuesByResourceGroup')[resourceGroup().name], parameters('defaultTagValue')))]"
           }
         ]
       },

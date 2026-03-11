@@ -407,11 +407,19 @@ foreach ($rg in $resourceGroups) {
 # ── Step 6: Create storage accounts ────────────────────
 Write-Host "`n[6/6] Creating storage accounts..." -ForegroundColor Yellow
 
-# 6a: Baseline storage account per RG
+# 6a: Baseline storage account per RG (skip if one already exists)
 foreach ($rg in $resourceGroups) {
     $rgName = "${rgPrefix}-${rg}"
-    $storageName = New-StorageName -BaseName "stg$($rg -replace '-','')"
 
+    # Check if the RG already has at least one storage account
+    $existingAccounts = @(Get-AzStorageAccount -ResourceGroupName $rgName -ErrorAction SilentlyContinue)
+    if ($existingAccounts.Count -gt 0) {
+        Write-Host "  • $rgName/$($existingAccounts[0].StorageAccountName) ... " -NoNewline
+        Write-Host "exists" -ForegroundColor DarkGray
+        continue
+    }
+
+    $storageName = New-StorageName -BaseName "stg$($rg -replace '-','')"
     Write-Host "  • $rgName/$storageName ... " -NoNewline
 
     New-AzStorageAccount `
