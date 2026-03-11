@@ -1,35 +1,42 @@
 {
-  "_comment": "Example assignment parameter values. Override priority: resource-level (rgName/resourceName) > RG-level (rgName) > default. Only add entries for scopes that differ from the default. RG names must match the ACTUAL Azure resource group names (including any prefix from STAGING_RG_PREFIX).",
+  "_comment": "Override priority: resource-level (rgName/resourceName) > RG-level (rgName) > default. Only add entries for scopes that differ from the default. RG names must match the ACTUAL Azure resource group names (including any prefix from STAGING_RG_PREFIX).",
+  "_placeholder_note": "Each override map MUST contain a placeholder key with an empty-string value: 'disabled' for RG overrides, 'disabled/disabled' for resource overrides. These are required by Azure Gov's static policy validator. Do NOT remove them.",
 
   "defaultOwner": "John Smith",
   "ownerOverrides": {
+    "disabled": "",
     "hardened-tags-rg-dev": "Sarah Chen",
     "hardened-tags-rg-shared": "Mike Johnson",
     "hardened-tags-rg-data": "Emily Davis"
   },
   "ownerResourceOverrides": {
+    "disabled/disabled": "",
     "hardened-tags-rg-dev/vm-special-01": "Alex Rivera",
     "hardened-tags-rg-shared/sql-finance-db": "Rachel Kim"
   },
 
   "defaultCostCode": "CC-1000",
   "costCodeOverrides": {
+    "disabled": "",
     "hardened-tags-rg-dev": "CC-2000-DEV",
     "hardened-tags-rg-staging": "CC-3000-STG",
     "hardened-tags-rg-data": "CC-4000-DATA"
   },
   "costCodeResourceOverrides": {
+    "disabled/disabled": "",
     "hardened-tags-rg-prod/vm-billing-01": "CC-9000-BILLING",
     "hardened-tags-rg-data/storage-archive": "CC-4500-ARCHIVE"
   },
 
   "defaultBusinessUnit": "Engineering",
   "businessUnitOverrides": {
+    "disabled": "",
     "hardened-tags-rg-finance": "Finance",
     "hardened-tags-rg-marketing": "Marketing",
     "hardened-tags-rg-hr": "HumanResources"
   },
   "businessUnitResourceOverrides": {
+    "disabled/disabled": "",
     "hardened-tags-rg-prod/vm-billing-01": "Finance",
     "hardened-tags-rg-prod/app-recruiting": "HumanResources"
   }
