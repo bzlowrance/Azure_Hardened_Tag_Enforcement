@@ -170,12 +170,23 @@ $rolesToAssign = @(
 )
 
 foreach ($role in $rolesToAssign) {
-    $existing = Get-AzRoleAssignment -ObjectId $principalId -Scope $mgScope -RoleDefinitionId $role.Id -ErrorAction SilentlyContinue
-    if (-not $existing) {
-        New-AzRoleAssignment -ObjectId $principalId -Scope $mgScope -RoleDefinitionId $role.Id | Out-Null
+    $roleAssignmentId = [guid]::NewGuid().ToString()
+    $roleAssignPath = "${mgScope}/providers/Microsoft.Authorization/roleAssignments/${roleAssignmentId}?api-version=2022-04-01"
+    $roleAssignBody = @{
+        properties = @{
+            principalId      = $principalId
+            roleDefinitionId = "${mgScope}/providers/Microsoft.Authorization/roleDefinitions/$($role.Id)"
+            principalType    = 'ServicePrincipal'
+        }
+    } | ConvertTo-Json -Depth 10
+
+    $roleResp = Invoke-AzRestMethod -Path $roleAssignPath -Method PUT -Payload $roleAssignBody -ErrorAction SilentlyContinue
+    if ($roleResp.StatusCode -ge 200 -and $roleResp.StatusCode -lt 300) {
         Write-Host "  • $($role.Name) — granted." -ForegroundColor Green
-    } else {
+    } elseif ($roleResp.StatusCode -eq 409) {
         Write-Host "  • $($role.Name) — already assigned." -ForegroundColor Green
+    } else {
+        Write-Warning "  • $($role.Name) — role assignment returned HTTP $($roleResp.StatusCode). Remediation may fail."
     }
 }
 
