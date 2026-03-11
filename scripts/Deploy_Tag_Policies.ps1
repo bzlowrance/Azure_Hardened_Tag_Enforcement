@@ -408,6 +408,51 @@ if ($scanSubs.Count -eq 0) {
     # Restore context to first subscription for remediation step
     $firstSubId = ($scanSubs[0].Id -split '/')[-1]
     Set-AzContext -SubscriptionId $firstSubId -Force | Out-Null
+
+    # Wait for evaluation scans to complete before triggering remediation
+    Write-Host "`n  Waiting for evaluation scans to complete..." -ForegroundColor Yellow
+    $maxScanWait = 300  # 5 minutes max
+    $scanElapsed = 0
+    $allDone = $false
+    while (-not $allDone -and $scanElapsed -lt $maxScanWait) {
+        Start-Sleep -Seconds 15
+        $scanElapsed += 15
+        $allDone = $true
+        foreach ($sub in $scanSubs) {
+            $subId = ($sub.Id -split '/')[-1]
+            # Check if any resources are still in a pending/unknown state by querying compliance summary
+            $summaryPath = "/subscriptions/$subId/providers/Microsoft.PolicyInsights/policyStates/latest/summarize?api-version=2019-10-01"
+            $summaryResp = Invoke-AzRestMethod -Path $summaryPath -Method POST -ErrorAction SilentlyContinue
+            if ($summaryResp.StatusCode -ge 200 -and $summaryResp.StatusCode -lt 300) {
+                $summary = ($summaryResp.Content | ConvertFrom-Json).value
+                if ($summary -and $summary[0].results.nonCompliantResources -gt 0) {
+                    # Scan has produced results — non-compliant resources detected
+                    continue
+                }
+            }
+            # If we didn't find non-compliant results yet, keep waiting
+            # (unless we've been waiting long enough)
+        }
+        Write-Host "    ... $scanElapsed seconds elapsed" -ForegroundColor DarkGray
+        # After first successful summary with non-compliant resources, we can proceed
+        foreach ($sub in $scanSubs) {
+            $subId = ($sub.Id -split '/')[-1]
+            $summaryPath = "/subscriptions/$subId/providers/Microsoft.PolicyInsights/policyStates/latest/summarize?api-version=2019-10-01"
+            $summaryResp = Invoke-AzRestMethod -Path $summaryPath -Method POST -ErrorAction SilentlyContinue
+            if ($summaryResp.StatusCode -ge 200 -and $summaryResp.StatusCode -lt 300) {
+                $summary = ($summaryResp.Content | ConvertFrom-Json).value
+                if ($summary -and $summary[0].results.nonCompliantResources -gt 0) {
+                    $allDone = $true
+                    break
+                }
+            }
+        }
+    }
+    if ($allDone) {
+        Write-Host "  Evaluation scan complete — non-compliant resources detected." -ForegroundColor Green
+    } else {
+        Write-Host "  Scan wait timed out after ${maxScanWait}s. Proceeding with remediation anyway." -ForegroundColor Yellow
+    }
 }
 
 # ── Step 5: Trigger remediation ─────────────────────────
