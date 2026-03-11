@@ -54,6 +54,9 @@ $locationPref       = $envVars['ASSIGNMENT_LOCATION']
 $POLICY_OWNER       = $envVars['POLICY_DEF_OWNER']
 $POLICY_COSTCODE    = $envVars['POLICY_DEF_COSTCODE']
 $POLICY_BU          = $envVars['POLICY_DEF_BUSINESSUNIT']
+$POLICY_RG_OWNER    = $envVars['POLICY_DEF_RG_OWNER']
+$POLICY_RG_COSTCODE = $envVars['POLICY_DEF_RG_COSTCODE']
+$POLICY_RG_BU       = $envVars['POLICY_DEF_RG_BUSINESSUNIT']
 
 if ($ASSIGNMENT_NAME.Length -gt 24) {
     Write-Error "ASSIGNMENT_NAME '$ASSIGNMENT_NAME' is $($ASSIGNMENT_NAME.Length) chars; Azure Policy requires 24 or fewer characters."
@@ -160,9 +163,12 @@ Write-Host "══════════════════════�
 Write-Host "`n[1/5] Creating policy definitions..." -ForegroundColor Yellow
 
 $policyDefs = @(
-    @{ Name = $POLICY_OWNER;    File = "enforce-tag-owner.json" },
-    @{ Name = $POLICY_COSTCODE; File = "enforce-tag-costcode.json" },
-    @{ Name = $POLICY_BU;       File = "enforce-tag-businessunit.json" }
+    @{ Name = $POLICY_OWNER;       File = "enforce-tag-owner.json" },
+    @{ Name = $POLICY_COSTCODE;    File = "enforce-tag-costcode.json" },
+    @{ Name = $POLICY_BU;          File = "enforce-tag-businessunit.json" },
+    @{ Name = $POLICY_RG_OWNER;    File = "enforce-rg-tag-owner.json" },
+    @{ Name = $POLICY_RG_COSTCODE; File = "enforce-rg-tag-costcode.json" },
+    @{ Name = $POLICY_RG_BU;       File = "enforce-rg-tag-businessunit.json" }
 )
 
 foreach ($def in $policyDefs) {
@@ -247,7 +253,7 @@ $initBody = @{
     properties = @{
         displayName       = $initObj.properties.displayName
         description       = $initObj.properties.description
-        metadata          = @{ category = 'Tags'; version = '5.0.0' }
+        metadata          = @{ category = 'Tags'; version = '6.0.0' }
         parameters        = $initObj.properties.parameters
         policyDefinitions = $initObj.properties.policyDefinitions
     }
@@ -458,7 +464,7 @@ if ($scanSubs.Count -eq 0) {
 # ── Step 5: Trigger remediation ─────────────────────────
 Write-Host "`n[5/5] Starting remediation tasks..." -ForegroundColor Yellow
 
-$refIds = @('enforceOwnerTag', 'enforceCostCodeTag', 'enforceBusinessUnitTag')
+$refIds = @('enforceOwnerTag', 'enforceCostCodeTag', 'enforceBusinessUnitTag', 'enforceRgOwnerTag', 'enforceRgCostCodeTag', 'enforceRgBusinessUnitTag')
 foreach ($refId in $refIds) {
     $remName = "remediate-$refId-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
     Write-Host "  • $remName ... " -NoNewline

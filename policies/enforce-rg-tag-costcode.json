@@ -1,0 +1,67 @@
+{
+  "properties": {
+    "displayName": "Enforce CostCode tag on resource groups with per-RG overrides",
+    "description": "Enforces the CostCode tag on resource groups. Resolves the enforced value using: (1) a per-resource-group override map keyed by RG name, (2) a default value. Tags are added if missing and corrected if they differ.",
+    "mode": "All",
+    "metadata": {
+      "category": "Tags",
+      "version": "1.0.0"
+    },
+    "parameters": {
+      "defaultTagValue": {
+        "type": "String",
+        "metadata": {
+          "displayName": "Default CostCode value",
+          "description": "The CostCode tag value applied to resource groups unless overridden."
+        }
+      },
+      "tagValuesByResourceGroup": {
+        "type": "Object",
+        "metadata": {
+          "displayName": "CostCode overrides by resource group",
+          "description": "Map of RG names to CostCode values. Example: {\"rg-dev\": \"CC-2000-DEV\"}"
+        },
+        "defaultValue": {
+          "disabled": ""
+        }
+      }
+    },
+    "policyRule": {
+      "if": {
+        "allOf": [
+          {
+            "field": "type",
+            "equals": "Microsoft.Resources/subscriptions/resourceGroups"
+          },
+          {
+            "anyOf": [
+              {
+                "field": "tags['CostCode']",
+                "exists": "false"
+              },
+              {
+                "field": "tags['CostCode']",
+                "notEquals": "[if(contains(parameters('tagValuesByResourceGroup'), field('name')), parameters('tagValuesByResourceGroup')[field('name')], parameters('defaultTagValue'))]"
+              }
+            ]
+          }
+        ]
+      },
+      "then": {
+        "effect": "modify",
+        "details": {
+          "roleDefinitionIds": [
+            "/providers/Microsoft.Authorization/roleDefinitions/4a9ae827-6dc8-4573-8ac7-8239d42aa03f"
+          ],
+          "operations": [
+            {
+              "operation": "addOrReplace",
+              "field": "tags['CostCode']",
+              "value": "[if(contains(parameters('tagValuesByResourceGroup'), field('name')), parameters('tagValuesByResourceGroup')[field('name')], parameters('defaultTagValue'))]"
+            }
+          ]
+        }
+      }
+    }
+  }
+}

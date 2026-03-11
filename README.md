@@ -1,6 +1,6 @@
 # Azure Hardened Tag Enforcement — Single Assignment with Per-RG and Per-Resource Overrides
 
-Enforces three mandatory tags (**Owner**, **CostCode**, **BusinessUnit**) on all resources under a management group. Each tag supports three resolution levels — a **default value**, **per-resource-group overrides**, and **per-resource overrides** — all within **one policy assignment**.
+Enforces three mandatory tags (**Owner**, **CostCode**, **BusinessUnit**) on all **resources and resource groups** under a management group. Each tag supports three resolution levels — a **default value**, **per-resource-group overrides**, and **per-resource overrides** — all within **one policy assignment**.
 
 ## How it works
 
@@ -68,10 +68,13 @@ graph LR
 ```
 Azure_Hardened_Tag_Enforcement/
 ├── policies/
-│   ├── enforce-tag-owner.json         # Policy definition — Owner
-│   ├── enforce-tag-costcode.json      # Policy definition — CostCode
-│   ├── enforce-tag-businessunit.json   # Policy definition — BusinessUnit
-│   └── initiative.json                # Initiative bundling all three
+│   ├── enforce-tag-owner.json          # Policy — Owner (resources)
+│   ├── enforce-tag-costcode.json       # Policy — CostCode (resources)
+│   ├── enforce-tag-businessunit.json   # Policy — BusinessUnit (resources)
+│   ├── enforce-rg-tag-owner.json       # Policy — Owner (resource groups)
+│   ├── enforce-rg-tag-costcode.json    # Policy — CostCode (resource groups)
+│   ├── enforce-rg-tag-businessunit.json# Policy — BusinessUnit (resource groups)
+│   └── initiative.json                 # Initiative bundling all six
 ├── scripts/
 │   ├── Stage_Test_Infrastructure.ps1  # Create MG, subscription, RGs, resources
 │   ├── Deploy_Tag_Policies.ps1        # Deploy definitions, initiative, assignment
@@ -92,9 +95,9 @@ A full suite of PowerShell scripts is included to provision infrastructure, depl
 
 ## Import into the Azure Portal
 
-### Step 1 — Create the 3 policy definitions
+### Step 1 — Create the 6 policy definitions
 
-For each file (`enforce-tag-owner.json`, `enforce-tag-costcode.json`, `enforce-tag-businessunit.json`):
+For each file (`enforce-tag-owner.json`, `enforce-tag-costcode.json`, `enforce-tag-businessunit.json`, `enforce-rg-tag-owner.json`, `enforce-rg-tag-costcode.json`, `enforce-rg-tag-businessunit.json`):
 
 1. **Azure Portal > Policy > Definitions > + Policy definition**
 2. **Definition location**: your management group
@@ -103,11 +106,13 @@ For each file (`enforce-tag-owner.json`, `enforce-tag-costcode.json`, `enforce-t
 5. Paste the `policyRule` and `parameters` content
 6. Save
 
+The `enforce-tag-*` policies use `mode: Indexed` and target resources inside RGs. The `enforce-rg-tag-*` policies use `mode: All` and target resource groups themselves.
+
 ### Step 2 — Create the initiative
 
 1. **Policy > Definitions > + Initiative definition**
 2. **Definition location**: same management group
-3. Add the 3 policies from Step 1
+3. Add the 6 policies from Step 1
 4. In `initiative.json`, replace **`<MG_ID>`** with your management group ID
 5. Save
 
@@ -144,7 +149,9 @@ Just **edit the assignment parameters** — no new policies or assignments neede
 4. Save
 5. Run a remediation task to apply changes to existing resources
 
-## How the policy rule works
+## How the policy rules work
+
+### Resource policies (`enforce-tag-*`, mode: Indexed)
 
 The policy condition checks four cases (using Owner as an example):
 
@@ -167,6 +174,21 @@ The modify operation resolves the correct value using nested `if()`:
 )]"
 ```
 
+### Resource group policies (`enforce-rg-tag-*`, mode: All)
+
+These use `field('name')` (the RG's own name) instead of `resourceGroup()` (which is not available when evaluating an RG). The condition checks two cases:
+
+1. **Tag is missing** → fire (add it)
+2. **RG name is in the RG override map AND tag differs, OR tag differs from the default** → fire (correct it)
+
+```json
+"value": "[if(
+  contains(parameters('tagValuesByResourceGroup'), field('name')),
+  parameters('tagValuesByResourceGroup')[field('name')],
+  parameters('defaultTagValue')
+)]"
+```
+
 ### Override key format
 
 | Level | Key format | Example |
@@ -178,8 +200,10 @@ The resource name is the ARM `field('name')` value — the short name of the res
 
 ## Scope
 
-- **Policy mode**: `Indexed` — applies to all resources inside resource groups
-- **Resource groups themselves** are not tagged by this policy (they are subscription-level resources and `resourceGroup()` is not available when evaluating an RG). If you need to enforce tags on RGs too, create a separate simple `mode: All` policy scoped to `Microsoft.Resources/subscriptions/resourceGroups`
+- **Resource policies** (`enforce-tag-*`): `mode: Indexed` — applies to all taggable resources inside resource groups. Uses `resourceGroup().name` for RG lookup and `concat(resourceGroup().name, '/', field('name'))` for resource lookup.
+- **Resource group policies** (`enforce-rg-tag-*`): `mode: All` with a type filter for `Microsoft.Resources/subscriptions/resourceGroups` — applies to the RGs themselves. Uses `field('name')` for RG lookup (since `resourceGroup()` is not available when evaluating an RG).
+
+Both sets of policies share the same RG override maps and default values via the initiative, so there is only **one assignment** to manage.
 
 ## Default tag values
 
@@ -230,7 +254,7 @@ The `modify` policy effect automatically corrects tags on resource **create and 
 
 1. Authenticates using the Automation Account's managed identity
 2. Triggers a policy evaluation scan on each subscription under the management group
-3. Creates remediation tasks for all three tag policies
+3. Creates remediation tasks for all six tag policies (3 resource + 3 resource group)
 4. Repeats on the configured schedule
 
 ## Cleanup
@@ -248,8 +272,9 @@ az policy set-definition delete \
   --name tag-enforcement-initiative \
   --management-group $MG
 
-# Remove definitions
+# Remove definitions (resources + resource groups)
 for tag in owner costcode businessunit; do
   az policy definition delete --name "enforce-tag-${tag}" --management-group $MG
+  az policy definition delete --name "enforce-rg-tag-${tag}" --management-group $MG
 done
 ```

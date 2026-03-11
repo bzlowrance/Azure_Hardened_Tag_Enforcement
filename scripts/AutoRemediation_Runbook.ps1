@@ -67,7 +67,7 @@ Start-Sleep -Seconds 30
 # ── Create remediation tasks ──────────────────────────
 Write-Output "Starting remediation tasks..."
 
-$refIds = @('enforceOwnerTag', 'enforceCostCodeTag', 'enforceBusinessUnitTag')
+$refIds = @('enforceOwnerTag', 'enforceCostCodeTag', 'enforceBusinessUnitTag', 'enforceRgOwnerTag', 'enforceRgCostCodeTag', 'enforceRgBusinessUnitTag')
 foreach ($refId in $refIds) {
     $remName = "auto-remediate-$refId-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
     try {

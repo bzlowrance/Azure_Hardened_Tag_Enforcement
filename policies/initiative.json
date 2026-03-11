@@ -1,11 +1,11 @@
 {
   "properties": {
     "displayName": "Tag Enforcement Initiative — Owner, CostCode, BusinessUnit",
-    "description": "Enforces Owner, CostCode, and BusinessUnit tags on all resources. Each tag supports three levels: a default value, per-resource-group overrides (key = RG name), and per-resource overrides (key = rgName/resourceName). Resource-level overrides take priority over RG-level, which take priority over the default.",
+    "description": "Enforces Owner, CostCode, and BusinessUnit tags on all resources AND resource groups. Each tag supports three levels for resources: a default value, per-resource-group overrides (key = RG name), and per-resource overrides (key = rgName/resourceName). Resource groups themselves are tagged using the default and per-RG override maps.",
     "policyType": "Custom",
     "metadata": {
       "category": "Tags",
-      "version": "5.0.0"
+      "version": "6.0.0"
     },
     "parameters": {
       "defaultOwner": {
@@ -119,6 +119,30 @@
           "defaultTagValue": { "value": "[parameters('defaultBusinessUnit')]" },
           "tagValuesByResourceGroup": { "value": "[parameters('businessUnitOverrides')]" },
           "tagValuesByResource": { "value": "[parameters('businessUnitResourceOverrides')]" }
+        }
+      },
+      {
+        "policyDefinitionId": "/providers/Microsoft.Management/managementGroups/<MG_ID>/providers/Microsoft.Authorization/policyDefinitions/enforce-rg-tag-owner",
+        "policyDefinitionReferenceId": "enforceRgOwnerTag",
+        "parameters": {
+          "defaultTagValue": { "value": "[parameters('defaultOwner')]" },
+          "tagValuesByResourceGroup": { "value": "[parameters('ownerOverrides')]" }
+        }
+      },
+      {
+        "policyDefinitionId": "/providers/Microsoft.Management/managementGroups/<MG_ID>/providers/Microsoft.Authorization/policyDefinitions/enforce-rg-tag-costcode",
+        "policyDefinitionReferenceId": "enforceRgCostCodeTag",
+        "parameters": {
+          "defaultTagValue": { "value": "[parameters('defaultCostCode')]" },
+          "tagValuesByResourceGroup": { "value": "[parameters('costCodeOverrides')]" }
+        }
+      },
+      {
+        "policyDefinitionId": "/providers/Microsoft.Management/managementGroups/<MG_ID>/providers/Microsoft.Authorization/policyDefinitions/enforce-rg-tag-businessunit",
+        "policyDefinitionReferenceId": "enforceRgBusinessUnitTag",
+        "parameters": {
+          "defaultTagValue": { "value": "[parameters('defaultBusinessUnit')]" },
+          "tagValuesByResourceGroup": { "value": "[parameters('businessUnitOverrides')]" }
         }
       }
     ]

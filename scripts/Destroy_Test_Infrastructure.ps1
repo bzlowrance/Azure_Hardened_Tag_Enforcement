@@ -72,6 +72,9 @@ $ASSIGNMENT_NAME    = $envVars['ASSIGNMENT_NAME']
 $POLICY_OWNER       = $envVars['POLICY_DEF_OWNER']
 $POLICY_COSTCODE    = $envVars['POLICY_DEF_COSTCODE']
 $POLICY_BU          = $envVars['POLICY_DEF_BUSINESSUNIT']
+$POLICY_RG_OWNER    = $envVars['POLICY_DEF_RG_OWNER']
+$POLICY_RG_COSTCODE = $envVars['POLICY_DEF_RG_COSTCODE']
+$POLICY_RG_BU       = $envVars['POLICY_DEF_RG_BUSINESSUNIT']
 $subscriptionIdRaw  = $envVars['STAGING_SUBSCRIPTION_ID']
 $subscriptionName   = $envVars['STAGING_SUBSCRIPTION_NAME']
 $rgPrefix           = $envVars['STAGING_RG_PREFIX']
@@ -107,6 +110,7 @@ Write-Host " Created by staging: $createdByStaging" -ForegroundColor White
 Write-Host " Policy assignment : $ASSIGNMENT_NAME" -ForegroundColor White
 Write-Host " Initiative        : $INITIATIVE_NAME" -ForegroundColor White
 Write-Host " Policy definitions: $POLICY_OWNER, $POLICY_COSTCODE, $POLICY_BU" -ForegroundColor White
+Write-Host "                     $POLICY_RG_OWNER, $POLICY_RG_COSTCODE, $POLICY_RG_BU" -ForegroundColor White
 Write-Host " Resource groups   : $($resourceGroups -join ', ')" -ForegroundColor White
 Write-Host ""
 
@@ -217,7 +221,7 @@ if (-not $SkipPolicyCleanup) {
     # ── Step 3: Remove policy definitions ───────────────
     Write-Host "`n[3/6] Removing policy definitions..." -ForegroundColor Yellow
 
-    foreach ($defName in @($POLICY_OWNER, $POLICY_COSTCODE, $POLICY_BU)) {
+    foreach ($defName in @($POLICY_OWNER, $POLICY_COSTCODE, $POLICY_BU, $POLICY_RG_OWNER, $POLICY_RG_COSTCODE, $POLICY_RG_BU)) {
         try {
             $defPath = "${mgScope}/providers/Microsoft.Authorization/policyDefinitions/${defName}"
             $deleted = $false
