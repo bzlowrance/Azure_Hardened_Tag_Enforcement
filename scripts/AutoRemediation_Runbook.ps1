@@ -33,6 +33,8 @@ try {
 $mgId            = Get-AutomationVariable -Name 'ManagementGroupId'
 $initiativeName  = Get-AutomationVariable -Name 'InitiativeName'
 $assignmentName  = Get-AutomationVariable -Name 'AssignmentName'
+$sourceVersion   = Get-AutomationVariable -Name 'RunbookSourceVersion' -ErrorAction SilentlyContinue
+$sourceHash      = Get-AutomationVariable -Name 'RunbookSourceHash' -ErrorAction SilentlyContinue
 
 $mgScope = "/providers/Microsoft.Management/managementGroups/$mgId"
 $assignmentId = "$mgScope/providers/Microsoft.Authorization/policyAssignments/$assignmentName"
@@ -40,6 +42,8 @@ $assignmentId = "$mgScope/providers/Microsoft.Authorization/policyAssignments/$a
 Write-Output "Management Group : $mgId"
 Write-Output "Initiative       : $initiativeName"
 Write-Output "Assignment       : $assignmentName"
+Write-Output "Runbook Version  : $($sourceVersion ? $sourceVersion : 'unset')"
+Write-Output "Runbook Hash     : $($sourceHash ? $sourceHash : 'unset')"
 
 # ── Create remediation tasks at management group scope ───
 Write-Output "Starting remediation tasks at MG scope..."

@@ -309,6 +309,8 @@ Write-Host "`n[5/6] Importing runbook and setting variables..." -ForegroundColor
 
 $runbookName = 'AutoRemediation-TagEnforcement'
 $runbookPath = Join-Path $PSScriptRoot 'AutoRemediation_Runbook.ps1'
+$runbookVersion = Get-Date -Format 'yyyy-MM-dd.HHmmss'
+$runbookHash = (Get-FileHash -Path $runbookPath -Algorithm SHA256).Hash
 
 if (-not (Test-Path $runbookPath)) {
     Write-Error "Runbook script not found: $runbookPath"
@@ -325,12 +327,16 @@ Import-AzAutomationRunbook `
     -Force | Out-Null
 
 Write-Host "  • Runbook '$runbookName' imported and published." -ForegroundColor Green
+Write-Host "  • Runbook source version: $runbookVersion" -ForegroundColor Green
+Write-Host "  • Runbook source hash   : $runbookHash" -ForegroundColor Green
 
 # Create/update Automation variables used by the runbook
 $automationVars = @(
     @{ Name = 'ManagementGroupId'; Value = $MG_ID },
     @{ Name = 'InitiativeName';    Value = $INITIATIVE_NAME },
-    @{ Name = 'AssignmentName';    Value = $ASSIGNMENT_NAME }
+    @{ Name = 'AssignmentName';    Value = $ASSIGNMENT_NAME },
+    @{ Name = 'RunbookSourceVersion'; Value = $runbookVersion },
+    @{ Name = 'RunbookSourceHash';    Value = $runbookHash }
 )
 
 foreach ($var in $automationVars) {
