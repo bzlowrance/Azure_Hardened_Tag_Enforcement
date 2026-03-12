@@ -509,6 +509,7 @@ $automationVars = @(
     @{ Name = 'InitiativeName';    Value = $INITIATIVE_NAME },
     @{ Name = 'AssignmentName';    Value = $ASSIGNMENT_NAME },
     @{ Name = 'FallbackSubscriptionIds'; Value = $fallbackSubscriptionIds },
+    @{ Name = 'CloudEnvironment';  Value = $azEnv },
     @{ Name = 'RunbookSourceVersion'; Value = $runbookVersion },
     @{ Name = 'RunbookSourceHash';    Value = $runbookHash }
 )

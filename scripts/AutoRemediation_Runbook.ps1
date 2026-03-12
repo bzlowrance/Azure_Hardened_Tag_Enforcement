@@ -42,9 +42,27 @@ $loadedModuleVersions = @(
 ) -join '; '
 Write-Output "Loaded Modules   : $loadedModuleVersions"
 
-# Authenticate with the Automation Account's managed identity
+# Read cloud environment early — it's needed before the main variable block.
+$cloudEnv = [string](Get-AutomationVariable -Name 'CloudEnvironment' -ErrorAction SilentlyContinue)
+
+# Authenticate with the Automation Account's managed identity.
+# Explicitly specify the cloud environment to ensure the correct ARM endpoint
+# is used. Without this, the sandbox may default to AzureCloud even in Gov.
+$connectParams = @{ Identity = $true; ErrorAction = 'Stop' }
+
+# CloudEnvironment is set by Deploy_Auto_Remediation.ps1; fall back to
+# well-known Gov environment name if the variable is not yet populated.
+if (-not [string]::IsNullOrWhiteSpace($cloudEnv)) {
+    $connectParams['Environment'] = $cloudEnv
+    Write-Output "Using cloud environment from variable: $cloudEnv"
+} else {
+    # Default to AzureUSGovernment — change if deploying to commercial cloud
+    $connectParams['Environment'] = 'AzureUSGovernment'
+    Write-Output "CloudEnvironment variable not set — defaulting to AzureUSGovernment"
+}
+
 try {
-    Connect-AzAccount -Identity -ErrorAction Stop | Out-Null
+    Connect-AzAccount @connectParams | Out-Null
     Write-Output "Authenticated with managed identity."
 } catch {
     Write-Error "Failed to authenticate with managed identity: $($_.Exception.Message)"
@@ -94,79 +112,43 @@ Write-Output "Environment      : $envName"
 Write-Output "Tenant           : $(if ($tenantId) { $tenantId } else { '(none)' })"
 Write-Output "Context Sub      : $(if ($ctxSubId) { $ctxSubId } else { '(none)' })"
 
-# ── Ensure a subscription is active in the context ──────
-# Start-AzPolicyRemediation (and most ARM cmdlets) require a subscription
-# in the current context to route requests through the correct ARM regional
-# endpoint — even when the operation targets management-group scope.
-#
-# IMPORTANT: With Automation Account managed identities, Set-AzContext cannot
-# resolve subscriptions that were not cached during Connect-AzAccount.  The
-# reliable pattern is to re-call Connect-AzAccount -Identity -Subscription $id
-# which authenticates directly against the target subscription.
-
+# ── Establish a subscription context ─────────────────────
+# Start-AzPolicyRemediation requires a subscription in the Az context.
 $effectiveSubId = $null
 
-# 1. Use the subscription already in context (Automation Account's subscription)
+# 1. Check if Connect-AzAccount already set a subscription
 if (-not [string]::IsNullOrWhiteSpace($ctxSubId)) {
     $effectiveSubId = $ctxSubId
     Write-Output "Using context subscription: $effectiveSubId"
 }
 
-# 2. Try fallback subscription IDs from automation variable
+# 2. Try fallback subscription IDs from the automation variable
 if ([string]::IsNullOrWhiteSpace($effectiveSubId) -and -not [string]::IsNullOrWhiteSpace($fallbackSubIdsRaw)) {
     $fallbackSubIds = @($fallbackSubIdsRaw -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
     foreach ($subId in $fallbackSubIds) {
         try {
-            $connectParams = @{ Identity = $true; Subscription = $subId; ErrorAction = 'Stop' }
-            if (-not [string]::IsNullOrWhiteSpace($envName) -and $envName -ne 'unknown') {
-                $connectParams['Environment'] = $envName
-            }
-            Connect-AzAccount @connectParams | Out-Null
+            $subConnectParams = @{ Identity = $true; Subscription = $subId; ErrorAction = 'Stop' }
+            if ($connectParams.ContainsKey('Environment')) { $subConnectParams['Environment'] = $connectParams['Environment'] }
+            Connect-AzAccount @subConnectParams | Out-Null
             $effectiveSubId = $subId
             Write-Output "Connected to fallback subscription: $effectiveSubId"
             break
         } catch {
-            Write-Warning "Could not connect to subscription '$subId': $($_.Exception.Message)"
+            Write-Warning "Could not connect to fallback subscription '$subId': $($_.Exception.Message)"
         }
     }
 }
 
-# 3. Discover subscriptions under the management group
-if ([string]::IsNullOrWhiteSpace($effectiveSubId)) {
-    try {
-        $mgSubs = @(Get-AzManagementGroupSubscription -GroupId $mgId -ErrorAction Stop)
-        foreach ($mgSub in $mgSubs) {
-            $discoveredSubId = ($mgSub.Id -split '/')[-1]
-            try {
-                $connectParams = @{ Identity = $true; Subscription = $discoveredSubId; ErrorAction = 'Stop' }
-                if (-not [string]::IsNullOrWhiteSpace($envName) -and $envName -ne 'unknown') {
-                    $connectParams['Environment'] = $envName
-                }
-                Connect-AzAccount @connectParams | Out-Null
-                $effectiveSubId = $discoveredSubId
-                Write-Output "Connected to discovered subscription: $effectiveSubId"
-                break
-            } catch {
-                Write-Warning "Could not connect to discovered subscription '$discoveredSubId': $($_.Exception.Message)"
-            }
-        }
-    } catch {
-        Write-Warning "Could not list subscriptions under MG '$mgId': $($_.Exception.Message)"
-    }
+if (-not [string]::IsNullOrWhiteSpace($effectiveSubId)) {
+    Write-Output "Effective Sub    : $effectiveSubId"
+} else {
+    Write-Warning "No subscription context available. Remediation cmdlets may fail."
 }
 
-if ([string]::IsNullOrWhiteSpace($effectiveSubId)) {
-    Write-Error "No subscription context available. The managed identity must have Reader access on at least one subscription under the management group. Set automation variable 'FallbackSubscriptionIds'."
-    throw "No subscription context available."
-}
-
-Write-Output "Effective Sub    : $effectiveSubId"
-
-# ── Create remediation tasks using Start-AzPolicyRemediation ────
-# This uses the same PowerShell cmdlet that works successfully in
-# Deploy_Tag_Policies.ps1. The cmdlet handles ARM endpoint routing,
-# API version selection, and token acquisition correctly — including
-# Azure Government managed identities.
+# ── Create remediation tasks ────────────────────────────
+# Strategy:
+#   1. Start-AzPolicyRemediation cmdlet at MG scope
+#   2. Start-AzPolicyRemediation at subscription scope (fallback)
 Write-Output "Starting remediation tasks..."
 
 $refIds = @('enforceOwnerTag', 'enforceCostCodeTag', 'enforceBusinessUnitTag', 'enforceRgOwnerTag', 'enforceRgCostCodeTag', 'enforceRgBusinessUnitTag')
@@ -178,24 +160,26 @@ foreach ($refId in $refIds) {
     $remName = "auto-rem-$refId-$(Get-Date -Format 'yyyyMMddHHmmss')"
     $created = $false
 
-    # Attempt MG-scope remediation (matches Deploy_Tag_Policies.ps1 approach)
-    try {
-        Start-AzPolicyRemediation `
-            -Name                        $remName `
-            -PolicyAssignmentId          $assignmentId `
-            -PolicyDefinitionReferenceId $refId `
-            -Scope                       $mgScope `
-            -ErrorAction Stop | Out-Null
+    # Attempt 1: PowerShell cmdlet at MG scope
+    if (-not [string]::IsNullOrWhiteSpace($effectiveSubId)) {
+        try {
+            Start-AzPolicyRemediation `
+                -Name                        $remName `
+                -PolicyAssignmentId          $assignmentId `
+                -PolicyDefinitionReferenceId $refId `
+                -Scope                       $mgScope `
+                -ErrorAction Stop | Out-Null
 
-        Write-Output "  Started: $remName (MG scope)"
-        $created = $true
-        $successCount++
-    } catch {
-        Write-Warning "  MG-scope failed for '$refId': $($_.Exception.Message)"
+            Write-Output "  Started: $remName (MG scope)"
+            $created = $true
+            $successCount++
+        } catch {
+            Write-Warning "  MG scope failed for '$refId': $($_.Exception.Message)"
+        }
     }
 
-    # Subscription-scope fallback
-    if (-not $created) {
+    # Attempt 2: Cmdlet subscription-scope fallback
+    if (-not $created -and -not [string]::IsNullOrWhiteSpace($effectiveSubId)) {
         $subScope = "/subscriptions/$effectiveSubId"
         try {
             Start-AzPolicyRemediation `
@@ -205,15 +189,26 @@ foreach ($refId in $refIds) {
                 -Scope                       $subScope `
                 -ErrorAction Stop | Out-Null
 
-            Write-Output "  Started: $remName (subscription fallback: $effectiveSubId)"
+            Write-Output "  Started: $remName (sub fallback: $effectiveSubId)"
             $created = $true
             $successCount++
         } catch {
-            Write-Warning "  Subscription fallback also failed for '$refId': $($_.Exception.Message)"
-            $failCount++
+            Write-Warning "  Sub fallback failed for '$refId': $($_.Exception.Message)"
         }
     }
+
+    if (-not $created) { $failCount++ }
 }
 
 Write-Output "Remediation summary: $successCount succeeded, $failCount failed out of $($refIds.Count) policies."
+
+if ($failCount -gt 0) {
+    Write-Output ""
+    Write-Output "RBAC DIAGNOSTIC: $failCount remediation(s) failed."
+    Write-Output "  Verify in Portal: MG '$mgId' → Access control → Role assignments"
+    Write-Output "    that the Automation Account MSI has Reader/Resource Policy Contributor."
+    Write-Output "  MG-scope RBAC can take up to 10 minutes to propagate to child subscriptions."
+    Write-Output "  Re-run Deploy_Auto_Remediation.ps1 if assignments are missing."
+}
+
 Write-Output "Auto-remediation runbook complete."
