@@ -41,58 +41,6 @@ Write-Output "Management Group : $mgId"
 Write-Output "Initiative       : $initiativeName"
 Write-Output "Assignment       : $assignmentName"
 
-# ── Enumerate subscriptions under the management group ──
-$scanSubs = @(Get-AzManagementGroupSubscription -GroupId $mgId -ErrorAction SilentlyContinue)
-
-# Fallback: use REST API if the cmdlet returns nothing (common with managed identities in Gov)
-if ($scanSubs.Count -eq 0) {
-    Write-Output "Cmdlet returned no subscriptions. Trying REST API..."
-    try {
-        $mgDescPath = "/providers/Microsoft.Management/managementGroups/${mgId}/descendants?api-version=2020-05-01"
-        $mgDescResp = Invoke-AzRestMethod -Path $mgDescPath -Method GET -ErrorAction Stop
-        if ($mgDescResp.StatusCode -eq 200) {
-            $descendants = ($mgDescResp.Content | ConvertFrom-Json).value
-            $scanSubs = @($descendants | Where-Object { $_.type -eq '/subscriptions' } | ForEach-Object {
-                [PSCustomObject]@{
-                    Id          = $_.id
-                    DisplayName = $_.properties.displayName
-                }
-            })
-        }
-    } catch {
-        Write-Warning "REST fallback also failed: $($_.Exception.Message)"
-    }
-}
-
-if ($scanSubs.Count -eq 0) {
-    Write-Warning "No subscriptions found under management group '$mgId'. Nothing to do."
-    return
-}
-Write-Output "Found $($scanSubs.Count) subscription(s) under '$mgId'."
-
-# ── Trigger policy evaluation scan per subscription ─────
-Write-Output "Triggering policy evaluation scans..."
-
-foreach ($sub in $scanSubs) {
-    $subId   = ($sub.Id -split '/')[-1]
-    $subName = if ($sub.DisplayName) { $sub.DisplayName } else { $subId }
-    try {
-        $triggerPath = "/subscriptions/$subId/providers/Microsoft.PolicyInsights/policyStates/latest/triggerEvaluation?api-version=2019-10-01"
-        $resp = Invoke-AzRestMethod -Path $triggerPath -Method POST -ErrorAction Stop
-        if ($resp.StatusCode -ge 200 -and $resp.StatusCode -lt 300) {
-            Write-Output "  Scan triggered: $subName ($subId)"
-        } else {
-            Write-Warning "  Scan returned HTTP $($resp.StatusCode) for $subName"
-        }
-    } catch {
-        Write-Warning "  Could not trigger scan for $subName : $($_.Exception.Message)"
-    }
-}
-
-# Allow time for evaluation to begin processing
-Write-Output "Waiting 30 seconds for evaluation to begin..."
-Start-Sleep -Seconds 30
-
 # ── Create remediation tasks at management group scope ───
 Write-Output "Starting remediation tasks at MG scope..."
 
