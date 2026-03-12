@@ -6,8 +6,8 @@
 .DESCRIPTION
     1. Creates a resource group for the Automation Account (if needed).
     2. Creates the Automation Account with a system-assigned managed identity.
-    3. Grants the managed identity Resource Policy Contributor + Tag Contributor
-       roles at the management group scope.
+    3. Creates a custom RBAC role with explicit PolicyInsights permissions and
+       assigns it along with Tag Contributor and Reader at the management group scope.
     4. Imports required Az modules into the Automation Account.
     5. Imports the remediation runbook.
     6. Creates Automation variables for configuration.
@@ -155,52 +155,107 @@ if (-not $principalId) {
 }
 Write-Host "  Managed Identity Principal: $principalId" -ForegroundColor DarkGray
 
-# ── Step 3: Grant roles at management group + subscription scope ──
-Write-Host "`n[3/6] Granting roles to managed identity..." -ForegroundColor Yellow
+# ── Step 3: Create custom role and grant roles at MG scope ──
+Write-Host "`n[3/6] Creating custom role and granting roles to managed identity..." -ForegroundColor Yellow
 $mgScope = "/providers/Microsoft.Management/managementGroups/$MG_ID"
 
-# Resource Policy Contributor (allows creating remediation tasks)
-$policyContribRoleId = "36243c78-bf99-498c-9df9-86d9f8d28608"
-# Tag Contributor (allows modifying tags)
-$tagContribRoleId    = "4a9ae827-6dc8-4573-8ac7-8239d42aa03f"
+# ── 3a: Create (or update) custom role for policy remediation ──
+$customRoleName = "Tag Enforcement Remediation Operator"
+$customRoleDefId = [guid]::NewGuid().ToString()
+
+# Check if the custom role already exists under this MG
+$existingRolePath = "${mgScope}/providers/Microsoft.Authorization/roleDefinitions?api-version=2022-04-01&`$filter=roleName eq '${customRoleName}'"
+$existingRoleResp = Invoke-AzRestMethod -Path $existingRolePath -Method GET -ErrorAction SilentlyContinue
+$existingRole = $null
+if ($existingRoleResp.StatusCode -eq 200) {
+    $existingRoles = ($existingRoleResp.Content | ConvertFrom-Json).value
+    if ($existingRoles.Count -gt 0) {
+        $existingRole = $existingRoles[0]
+        $customRoleDefId = $existingRole.name
+        Write-Host "  Custom role already exists (ID: $customRoleDefId). Updating..." -ForegroundColor DarkGray
+    }
+}
+
+$customRoleBody = @{
+    properties = @{
+        roleName    = $customRoleName
+        description = 'Custom role for tag enforcement auto-remediation. Grants explicit PolicyInsights, Authorization read, and resource management permissions at MG scope.'
+        type        = 'CustomRole'
+        permissions = @(
+            @{
+                actions = @(
+                    'Microsoft.PolicyInsights/remediations/write',
+                    'Microsoft.PolicyInsights/remediations/read',
+                    'Microsoft.PolicyInsights/remediations/delete',
+                    'Microsoft.PolicyInsights/policyStates/*',
+                    'Microsoft.PolicyInsights/policyTrackedResources/*',
+                    'Microsoft.Authorization/policyAssignments/read',
+                    'Microsoft.Authorization/policyDefinitions/read',
+                    'Microsoft.Authorization/policySetDefinitions/read',
+                    'Microsoft.Management/managementGroups/read',
+                    'Microsoft.Resources/deployments/*',
+                    'Microsoft.Resources/subscriptions/read',
+                    'Microsoft.Resources/subscriptions/resourceGroups/read'
+                )
+                notActions    = @()
+                dataActions   = @()
+                notDataActions = @()
+            }
+        )
+        assignableScopes = @(
+            $mgScope
+        )
+    }
+} | ConvertTo-Json -Depth 10
+
+$roleDefPath = "${mgScope}/providers/Microsoft.Authorization/roleDefinitions/${customRoleDefId}?api-version=2022-04-01"
+$roleDefResp = Invoke-AzRestMethod -Path $roleDefPath -Method PUT -Payload $customRoleBody -ErrorAction Stop
+if ($roleDefResp.StatusCode -ge 200 -and $roleDefResp.StatusCode -lt 300) {
+    Write-Host "  Custom role '$customRoleName' created/updated (ID: $customRoleDefId)." -ForegroundColor Green
+} else {
+    $errContent = $roleDefResp.Content | ConvertFrom-Json -ErrorAction SilentlyContinue
+    $errMsg = if ($errContent -and $errContent.error) { $errContent.error.message } else { "HTTP $($roleDefResp.StatusCode)" }
+    Write-Error "  Failed to create custom role: $errMsg"
+}
+
+# Wait for role definition to propagate
+Write-Host "  Waiting 15 seconds for role definition to propagate..." -ForegroundColor DarkGray
+Start-Sleep -Seconds 15
+
+# ── 3b: Assign roles at MG scope ──
+# Custom role for PolicyInsights remediation permissions
+$customRoleFullId = "${mgScope}/providers/Microsoft.Authorization/roleDefinitions/${customRoleDefId}"
+# Tag Contributor (allows modifying tags via policy remediation)
+$tagContribRoleId = "4a9ae827-6dc8-4573-8ac7-8239d42aa03f"
+# Reader (allows listing subscriptions under the MG for evaluation scans)
+$readerRoleId     = "acdd72a7-3385-48ef-bd42-f606fba81ae7"
 
 $rolesToAssign = @(
-    @{ Name = 'Resource Policy Contributor'; Id = $policyContribRoleId },
-    @{ Name = 'Tag Contributor';             Id = $tagContribRoleId }
+    @{ Name = 'Tag Enforcement Remediation Operator'; DefinitionId = $customRoleFullId },
+    @{ Name = 'Tag Contributor';                      DefinitionId = "/providers/Microsoft.Authorization/roleDefinitions/$tagContribRoleId" },
+    @{ Name = 'Reader';                               DefinitionId = "/providers/Microsoft.Authorization/roleDefinitions/$readerRoleId" }
 )
 
-# Collect all scopes: MG + each subscription under it
-# Gov doesn't always honor MG-level RBAC inheritance for PolicyInsights,
-# so we also assign roles at each subscription scope as a fallback.
-$allScopes = @($mgScope)
-$mgSubs = @(Get-AzManagementGroupSubscription -GroupId $MG_ID -ErrorAction SilentlyContinue)
-foreach ($sub in $mgSubs) {
-    $subId = ($sub.Id -split '/')[-1]
-    $allScopes += "/subscriptions/$subId"
-}
-Write-Host "  Assigning roles at $($allScopes.Count) scope(s) (MG + $($mgSubs.Count) subscription(s))..." -ForegroundColor DarkGray
-
-foreach ($scope in $allScopes) {
-    $scopeLabel = if ($scope -eq $mgScope) { "MG: $MG_ID" } else { "Sub: $($scope -replace '/subscriptions/','')" }
-    foreach ($role in $rolesToAssign) {
-        $roleAssignmentId = [guid]::NewGuid().ToString()
-        $roleAssignPath = "${scope}/providers/Microsoft.Authorization/roleAssignments/${roleAssignmentId}?api-version=2022-04-01"
-        $roleAssignBody = @{
-            properties = @{
-                principalId      = $principalId
-                roleDefinitionId = "/providers/Microsoft.Authorization/roleDefinitions/$($role.Id)"
-                principalType    = 'ServicePrincipal'
-            }
-        } | ConvertTo-Json -Depth 10
-
-        $roleResp = Invoke-AzRestMethod -Path $roleAssignPath -Method PUT -Payload $roleAssignBody -ErrorAction SilentlyContinue
-        if ($roleResp.StatusCode -ge 200 -and $roleResp.StatusCode -lt 300) {
-            Write-Host "  • [$scopeLabel] $($role.Name) — granted." -ForegroundColor Green
-        } elseif ($roleResp.StatusCode -eq 409) {
-            Write-Host "  • [$scopeLabel] $($role.Name) — already assigned." -ForegroundColor Green
-        } else {
-            Write-Warning "  • [$scopeLabel] $($role.Name) — HTTP $($roleResp.StatusCode)."
+foreach ($role in $rolesToAssign) {
+    $roleAssignmentId = [guid]::NewGuid().ToString()
+    $roleAssignPath = "${mgScope}/providers/Microsoft.Authorization/roleAssignments/${roleAssignmentId}?api-version=2022-04-01"
+    $roleAssignBody = @{
+        properties = @{
+            principalId      = $principalId
+            roleDefinitionId = $role.DefinitionId
+            principalType    = 'ServicePrincipal'
         }
+    } | ConvertTo-Json -Depth 10
+
+    $roleResp = Invoke-AzRestMethod -Path $roleAssignPath -Method PUT -Payload $roleAssignBody -ErrorAction SilentlyContinue
+    if ($roleResp.StatusCode -ge 200 -and $roleResp.StatusCode -lt 300) {
+        Write-Host "  • [MG: $MG_ID] $($role.Name) — granted." -ForegroundColor Green
+    } elseif ($roleResp.StatusCode -eq 409) {
+        Write-Host "  • [MG: $MG_ID] $($role.Name) — already assigned." -ForegroundColor Green
+    } else {
+        $errContent = $roleResp.Content | ConvertFrom-Json -ErrorAction SilentlyContinue
+        $errMsg = if ($errContent -and $errContent.error) { $errContent.error.message } else { "HTTP $($roleResp.StatusCode)" }
+        Write-Warning "  • [MG: $MG_ID] $($role.Name) — $errMsg"
     }
 }
 
