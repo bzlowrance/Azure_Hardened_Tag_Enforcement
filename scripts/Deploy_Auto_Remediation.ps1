@@ -340,9 +340,11 @@ if ($azEnv -match 'Gov') {
 }
 
 $modulesToImport = @(
-    @{ Name = 'Az.Accounts';       Version = '5.3.3' },
+    # Pinned to known-working versions for Azure Automation PowerShell runbook runtime.
+    # Newer combinations can fail managed identity auth with GetTokenAsync runtime errors.
+    @{ Name = 'Az.Accounts';       Version = '2.15.0' },
     @{ Name = 'Az.PolicyInsights'; Version = '1.6.0' },
-    @{ Name = 'Az.Resources';      Version = '9.0.3' }
+    @{ Name = 'Az.Resources';      Version = '6.13.0' }
 )
 
 foreach ($mod in $modulesToImport) {
@@ -353,15 +355,11 @@ foreach ($mod in $modulesToImport) {
         $existingVersion = [string]$existingMod.Version
         $desiredVersion = [string]$mod.Version
 
-        $existingParsed = $null
-        $desiredParsed = $null
-        $canCompare = ([version]::TryParse($existingVersion, [ref]$existingParsed) -and [version]::TryParse($desiredVersion, [ref]$desiredParsed))
-
-        if ($canCompare -and $existingParsed -ge $desiredParsed) {
-            Write-Host "  • $($mod.Name) v$existingVersion — already meets minimum v$desiredVersion." -ForegroundColor Green
+        if ($existingVersion -eq $desiredVersion) {
+            Write-Host "  • $($mod.Name) v$existingVersion — already at required pinned version." -ForegroundColor Green
             $needsImport = $false
         } else {
-            Write-Host "  • $($mod.Name) v$existingVersion is older than required v$desiredVersion. Re-importing..." -ForegroundColor Yellow
+            Write-Host "  • $($mod.Name) v$existingVersion differs from required v$desiredVersion. Re-importing pinned version..." -ForegroundColor Yellow
             try {
                 Remove-AzAutomationModule `
                     -ResourceGroupName     $AUTOMATION_RG_NAME `
