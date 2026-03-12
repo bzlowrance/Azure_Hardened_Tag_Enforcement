@@ -98,7 +98,11 @@ Write-Output "Context Sub      : $(if ($ctxSubId) { $ctxSubId } else { '(none)' 
 # Start-AzPolicyRemediation (and most ARM cmdlets) require a subscription
 # in the current context to route requests through the correct ARM regional
 # endpoint — even when the operation targets management-group scope.
-# This mirrors Deploy_Tag_Policies.ps1 which calls Set-AzContext before remediation.
+#
+# IMPORTANT: With Automation Account managed identities, Set-AzContext cannot
+# resolve subscriptions that were not cached during Connect-AzAccount.  The
+# reliable pattern is to re-call Connect-AzAccount -Identity -Subscription $id
+# which authenticates directly against the target subscription.
 
 $effectiveSubId = $null
 
@@ -113,14 +117,16 @@ if ([string]::IsNullOrWhiteSpace($effectiveSubId) -and -not [string]::IsNullOrWh
     $fallbackSubIds = @($fallbackSubIdsRaw -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
     foreach ($subId in $fallbackSubIds) {
         try {
-            $setParams = @{ SubscriptionId = $subId; Force = $true; ErrorAction = 'Stop' }
-            if (-not [string]::IsNullOrWhiteSpace($tenantId)) { $setParams['TenantId'] = $tenantId }
-            Set-AzContext @setParams | Out-Null
+            $connectParams = @{ Identity = $true; Subscription = $subId; ErrorAction = 'Stop' }
+            if (-not [string]::IsNullOrWhiteSpace($envName) -and $envName -ne 'unknown') {
+                $connectParams['Environment'] = $envName
+            }
+            Connect-AzAccount @connectParams | Out-Null
             $effectiveSubId = $subId
-            Write-Output "Set context to fallback subscription: $effectiveSubId"
+            Write-Output "Connected to fallback subscription: $effectiveSubId"
             break
         } catch {
-            Write-Warning "Could not set context to subscription '$subId': $($_.Exception.Message)"
+            Write-Warning "Could not connect to subscription '$subId': $($_.Exception.Message)"
         }
     }
 }
@@ -132,14 +138,16 @@ if ([string]::IsNullOrWhiteSpace($effectiveSubId)) {
         foreach ($mgSub in $mgSubs) {
             $discoveredSubId = ($mgSub.Id -split '/')[-1]
             try {
-                $setParams = @{ SubscriptionId = $discoveredSubId; Force = $true; ErrorAction = 'Stop' }
-                if (-not [string]::IsNullOrWhiteSpace($tenantId)) { $setParams['TenantId'] = $tenantId }
-                Set-AzContext @setParams | Out-Null
+                $connectParams = @{ Identity = $true; Subscription = $discoveredSubId; ErrorAction = 'Stop' }
+                if (-not [string]::IsNullOrWhiteSpace($envName) -and $envName -ne 'unknown') {
+                    $connectParams['Environment'] = $envName
+                }
+                Connect-AzAccount @connectParams | Out-Null
                 $effectiveSubId = $discoveredSubId
-                Write-Output "Set context to discovered subscription: $effectiveSubId"
+                Write-Output "Connected to discovered subscription: $effectiveSubId"
                 break
             } catch {
-                Write-Warning "Could not set context to discovered subscription '$discoveredSubId': $($_.Exception.Message)"
+                Write-Warning "Could not connect to discovered subscription '$discoveredSubId': $($_.Exception.Message)"
             }
         }
     } catch {
