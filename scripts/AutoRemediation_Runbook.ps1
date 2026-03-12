@@ -20,6 +20,28 @@
     Requires Az.Accounts and Az.PolicyInsights modules imported into the Automation Account.
 #>
 
+# Avoid inherited context artifacts between sandbox jobs.
+Disable-AzContextAutosave -Scope Process | Out-Null
+
+# Explicitly import required modules to reduce sandbox module-loading ambiguity.
+$requiredAzModules = @('Az.Accounts', 'Az.Resources', 'Az.PolicyInsights')
+foreach ($moduleName in $requiredAzModules) {
+    try {
+        Import-Module -Name $moduleName -ErrorAction Stop
+    } catch {
+        Write-Error "Failed to import required module '$moduleName': $($_.Exception.Message)"
+        throw
+    }
+}
+
+$loadedModuleVersions = @(
+    $requiredAzModules | ForEach-Object {
+        $m = Get-Module -Name $_ | Sort-Object Version -Descending | Select-Object -First 1
+        if ($m) { "{0}={1}" -f $m.Name, $m.Version }
+    }
+) -join '; '
+Write-Output "Loaded Modules   : $loadedModuleVersions"
+
 # Authenticate with the Automation Account's managed identity
 try {
     Connect-AzAccount -Identity -ErrorAction Stop | Out-Null
@@ -211,6 +233,24 @@ if ($mgScopeUnauthorized) {
         foreach ($subId in $scanSubIds) {
             $subScope = "/subscriptions/$subId"
             Write-Output "  Subscription scope: $subScope"
+
+            $subReachable = $false
+            try {
+                Set-AzContext -SubscriptionId $subId -ErrorAction Stop | Out-Null
+                $subInfoResp = Invoke-AzRestMethod -Path "/subscriptions/$subId?api-version=2020-01-01" -Method GET -ErrorAction Stop
+                if ($subInfoResp.StatusCode -eq 200) {
+                    $subReachable = $true
+                    Write-Output "  Subscription access check passed: $subId"
+                }
+            } catch {
+                Write-Warning "  Subscription access check failed for '$subId': $($_.Exception.Message)"
+            }
+
+            if (-not $subReachable) {
+                Write-Warning "  Skipping remediation at subscription scope '$subId' because subscription is not reachable in current context."
+                continue
+            }
+
             foreach ($refId in $refIds) {
                 $null = Invoke-RemediationCreate -Scope $subScope -RefId $refId -AssignmentId $assignmentId -LoggedFirstPath ([ref]$loggedFirstRemPath)
             }

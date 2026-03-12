@@ -251,6 +251,8 @@ $rolesToAssign = @(
     @{ Name = 'Reader';                               DefinitionId = "/providers/Microsoft.Authorization/roleDefinitions/$readerRoleId"; RoleId = $readerRoleId }
 )
 
+$assignmentScopes = @($mgScope) + @($mgSubIds | ForEach-Object { "/subscriptions/$_" })
+
 # Remove stale assignments from prior Automation Account identities.
 # Stale entries commonly show as principalType = Unknown after identity recreation.
 Write-Host "  Cleaning up stale MG-scope role assignments for prior identities..." -ForegroundColor DarkGray
@@ -284,28 +286,31 @@ if ($existingAssignmentsResp.StatusCode -eq 200) {
 
 $roleAssignmentFailures = @()
 
-foreach ($role in $rolesToAssign) {
-    $roleAssignmentId = [guid]::NewGuid().ToString()
-    $roleAssignPath = "${mgScope}/providers/Microsoft.Authorization/roleAssignments/${roleAssignmentId}?api-version=2022-04-01"
-    $roleAssignBody = @{
-        properties = @{
-            principalId      = $principalId
-            roleDefinitionId = $role.DefinitionId
-            principalType    = 'ServicePrincipal'
-        }
-    } | ConvertTo-Json -Depth 10
+foreach ($scope in $assignmentScopes) {
+    $scopeLabel = if ($scope -eq $mgScope) { "MG: $MG_ID" } else { "Sub: $($scope -replace '/subscriptions/','')" }
+    foreach ($role in $rolesToAssign) {
+        $roleAssignmentId = [guid]::NewGuid().ToString()
+        $roleAssignPath = "${scope}/providers/Microsoft.Authorization/roleAssignments/${roleAssignmentId}?api-version=2022-04-01"
+        $roleAssignBody = @{
+            properties = @{
+                principalId      = $principalId
+                roleDefinitionId = $role.DefinitionId
+                principalType    = 'ServicePrincipal'
+            }
+        } | ConvertTo-Json -Depth 10
 
-    $roleResp = Invoke-AzRestMethod -Path $roleAssignPath -Method PUT -Payload $roleAssignBody -ErrorAction SilentlyContinue
-    if ($roleResp.StatusCode -ge 200 -and $roleResp.StatusCode -lt 300) {
-        Write-Host "  • [MG: $MG_ID] $($role.Name) — granted." -ForegroundColor Green
-    } elseif ($roleResp.StatusCode -eq 409) {
-        Write-Host "  • [MG: $MG_ID] $($role.Name) — already assigned." -ForegroundColor Green
-    } else {
-        $errContent = $roleResp.Content | ConvertFrom-Json -ErrorAction SilentlyContinue
-        $errMsg = if ($errContent -and $errContent.error) { $errContent.error.message } else { "HTTP $($roleResp.StatusCode)" }
-        $failure = "[MG: $MG_ID] $($role.Name) — $errMsg"
-        $roleAssignmentFailures += $failure
-        Write-Warning "  • $failure"
+        $roleResp = Invoke-AzRestMethod -Path $roleAssignPath -Method PUT -Payload $roleAssignBody -ErrorAction SilentlyContinue
+        if ($roleResp.StatusCode -ge 200 -and $roleResp.StatusCode -lt 300) {
+            Write-Host "  • [$scopeLabel] $($role.Name) — granted." -ForegroundColor Green
+        } elseif ($roleResp.StatusCode -eq 409) {
+            Write-Host "  • [$scopeLabel] $($role.Name) — already assigned." -ForegroundColor Green
+        } else {
+            $errContent = $roleResp.Content | ConvertFrom-Json -ErrorAction SilentlyContinue
+            $errMsg = if ($errContent -and $errContent.error) { $errContent.error.message } else { "HTTP $($roleResp.StatusCode)" }
+            $failure = "[$scopeLabel] $($role.Name) — $errMsg"
+            $roleAssignmentFailures += $failure
+            Write-Warning "  • $failure"
+        }
     }
 }
 
@@ -401,18 +406,40 @@ foreach ($mod in $modulesToImport) {
     }
 }
 
-# Wait for Az.Accounts to finish importing (other modules depend on it)
+# Wait for all required modules to finish importing and verify final versions
 Write-Host "  Waiting for module imports to complete..." -ForegroundColor DarkGray
-$maxWait = 20
-for ($i = 1; $i -le $maxWait; $i++) {
-    $acctMod = Get-AzAutomationModule -ResourceGroupName $AUTOMATION_RG_NAME -AutomationAccountName $AUTOMATION_ACCOUNT_NAME -Name 'Az.Accounts' -ErrorAction SilentlyContinue
-    if ($acctMod -and $acctMod.ProvisioningState -eq 'Succeeded') { break }
-    if ($acctMod -and $acctMod.ProvisioningState -eq 'Failed') {
-        Write-Error "Az.Accounts module import failed. Check the Automation Account in the portal."
+$maxWait = 40
+
+foreach ($mod in $modulesToImport) {
+    $completed = $false
+    for ($i = 1; $i -le $maxWait; $i++) {
+        $modState = Get-AzAutomationModule -ResourceGroupName $AUTOMATION_RG_NAME -AutomationAccountName $AUTOMATION_ACCOUNT_NAME -Name $mod.Name -ErrorAction SilentlyContinue
+        if ($modState -and $modState.ProvisioningState -eq 'Succeeded') {
+            $completed = $true
+            break
+        }
+        if ($modState -and $modState.ProvisioningState -eq 'Failed') {
+            Write-Error "$($mod.Name) module import failed. Check Automation Account modules in the portal."
+        }
+        Start-Sleep -Seconds 15
     }
-    Start-Sleep -Seconds 15
+
+    if (-not $completed) {
+        Write-Warning "$($mod.Name) did not reach Succeeded state within wait window."
+    }
+
+    $finalMod = Get-AzAutomationModule -ResourceGroupName $AUTOMATION_RG_NAME -AutomationAccountName $AUTOMATION_ACCOUNT_NAME -Name $mod.Name -ErrorAction SilentlyContinue
+    if ($finalMod) {
+        Write-Host "  • $($mod.Name) final: version=$($finalMod.Version), state=$($finalMod.ProvisioningState)" -ForegroundColor DarkGray
+        if ([string]$finalMod.Version -ne [string]$mod.Version) {
+            Write-Warning "  • $($mod.Name) version mismatch. Desired=$($mod.Version), Actual=$($finalMod.Version)."
+        }
+    } else {
+        Write-Warning "  • $($mod.Name) not found after import wait."
+    }
 }
-Write-Host "  Module imports complete." -ForegroundColor Green
+
+Write-Host "  Module import check complete." -ForegroundColor Green
 
 # ── Step 5: Import runbook + create variables ──────────
 Write-Host "`n[5/6] Importing runbook and setting variables..." -ForegroundColor Yellow
