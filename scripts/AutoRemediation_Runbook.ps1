@@ -34,6 +34,7 @@ $rawMgId         = [string](Get-AutomationVariable -Name 'ManagementGroupId')
 $mgId            = ($rawMgId -replace '\s', '').Trim()
 $initiativeName  = ([string](Get-AutomationVariable -Name 'InitiativeName')).Trim()
 $assignmentName  = ([string](Get-AutomationVariable -Name 'AssignmentName')).Trim()
+$fallbackSubIdsRaw = [string](Get-AutomationVariable -Name 'FallbackSubscriptionIds' -ErrorAction SilentlyContinue)
 $sourceVersion   = Get-AutomationVariable -Name 'RunbookSourceVersion' -ErrorAction SilentlyContinue
 $sourceHash      = Get-AutomationVariable -Name 'RunbookSourceHash' -ErrorAction SilentlyContinue
 
@@ -58,6 +59,7 @@ Write-Output "Assignment       : $assignmentName"
 Write-Output "Runbook Version  : $resolvedSourceVersion"
 Write-Output "Runbook Hash     : $resolvedSourceHash"
 Write-Output "Remediation Scope: [$mgScope]"
+Write-Output "Fallback Subs Var: [$fallbackSubIdsRaw]"
 
 # Preflight diagnostics: print caller and effective permissions at MG scope
 try {
@@ -158,31 +160,55 @@ foreach ($refId in $refIds) {
 if ($mgScopeUnauthorized) {
     Write-Warning "MG-scope remediation creation was unauthorized. Falling back to subscription-scope remediation tasks."
 
-    $scanSubs = @(Get-AzManagementGroupSubscription -GroupId $mgId -ErrorAction SilentlyContinue)
-    if ($scanSubs.Count -eq 0) {
+    $scanSubIds = @()
+    if (-not [string]::IsNullOrWhiteSpace($fallbackSubIdsRaw)) {
+        $scanSubIds = @($fallbackSubIdsRaw -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+        if ($scanSubIds.Count -gt 0) {
+            Write-Output "Using fallback subscription IDs from automation variable. Count: $($scanSubIds.Count)"
+        }
+    }
+
+    if ($scanSubIds.Count -eq 0) {
+        $scanSubs = @(Get-AzManagementGroupSubscription -GroupId $mgId -ErrorAction SilentlyContinue)
+        $scanSubIds = @($scanSubs | ForEach-Object { ($_.Id -split '/')[-1] } | Where-Object { $_ })
+    }
+
+    if ($scanSubIds.Count -eq 0) {
         try {
             $mgDescPath = "/providers/Microsoft.Management/managementGroups/${mgId}/descendants?api-version=2020-05-01"
             $mgDescResp = Invoke-AzRestMethod -Path $mgDescPath -Method GET -ErrorAction Stop
             if ($mgDescResp.StatusCode -eq 200) {
                 $descendants = ($mgDescResp.Content | ConvertFrom-Json).value
-                $scanSubs = @($descendants | Where-Object { $_.type -eq '/subscriptions' } | ForEach-Object {
-                    [PSCustomObject]@{
-                        Id          = $_.id
-                        DisplayName = $_.properties.displayName
-                    }
-                })
+                $scanSubIds = @($descendants | Where-Object { $_.type -eq '/subscriptions' } | ForEach-Object { ($_.id -split '/')[-1] } | Where-Object { $_ })
             }
         } catch {
             Write-Warning "Subscription discovery fallback failed: $($_.Exception.Message)"
         }
     }
 
-    if ($scanSubs.Count -eq 0) {
-        Write-Warning "No subscriptions found under management group '$mgId'. Subscription-scope fallback cannot continue."
+    if ($scanSubIds.Count -eq 0) {
+        $ctxSubId = $null
+        try {
+            $ctx = Get-AzContext
+            if ($ctx -and $ctx.Subscription -and $ctx.Subscription.Id) {
+                $ctxSubId = [string]$ctx.Subscription.Id
+            }
+        } catch {
+            $ctxSubId = $null
+        }
+
+        if (-not [string]::IsNullOrWhiteSpace($ctxSubId)) {
+            $scanSubIds = @($ctxSubId)
+            Write-Warning "Using current context subscription for fallback: $ctxSubId"
+        }
+    }
+
+    if ($scanSubIds.Count -eq 0) {
+        Write-Warning "No subscriptions found under management group '$mgId'. Subscription-scope fallback cannot continue. Set automation variable 'FallbackSubscriptionIds'."
     } else {
-        Write-Output "Fallback target subscriptions: $($scanSubs.Count)"
-        foreach ($sub in $scanSubs) {
-            $subId = ($sub.Id -split '/')[-1]
+        $scanSubIds = @($scanSubIds | Select-Object -Unique)
+        Write-Output "Fallback target subscriptions: $($scanSubIds.Count)"
+        foreach ($subId in $scanSubIds) {
             $subScope = "/subscriptions/$subId"
             Write-Output "  Subscription scope: $subScope"
             foreach ($refId in $refIds) {

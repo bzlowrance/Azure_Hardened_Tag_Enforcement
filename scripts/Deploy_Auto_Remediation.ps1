@@ -116,6 +116,9 @@ if ($mgSubs.Count -eq 0) {
     Write-Error "No subscriptions found under management group '$MG_ID'. Deploy the management group and subscription first."
 }
 
+$mgSubIds = @($mgSubs | ForEach-Object { ($_.Id -split '/')[-1] } | Where-Object { $_ })
+$fallbackSubscriptionIds = ($mgSubIds -join ',')
+
 $targetSubId = ($mgSubs[0].Id -split '/')[-1]
 Set-AzContext -SubscriptionId $targetSubId -Force | Out-Null
 
@@ -129,6 +132,7 @@ Write-Host " Management Group  : $MG_ID" -ForegroundColor Cyan
 Write-Host " Automation Acct   : $AUTOMATION_ACCOUNT_NAME" -ForegroundColor Cyan
 Write-Host " Resource Group    : $AUTOMATION_RG_NAME" -ForegroundColor Cyan
 Write-Host " Schedule          : Every $scheduleHours hour(s)" -ForegroundColor Cyan
+Write-Host " Fallback Subs     : $fallbackSubscriptionIds" -ForegroundColor Cyan
 Write-Host "═══════════════════════════════════════════════════" -ForegroundColor Cyan
 
 # ── Step 1: Create resource group ───────────────────────
@@ -336,23 +340,66 @@ if ($azEnv -match 'Gov') {
 }
 
 $modulesToImport = @(
-    @{ Name = 'Az.Accounts';       Version = '3.0.0' },
-    @{ Name = 'Az.PolicyInsights';  Version = '1.6.0' },
-    @{ Name = 'Az.Resources';       Version = '7.0.0' }
+    @{ Name = 'Az.Accounts';       Version = '5.3.3' },
+    @{ Name = 'Az.PolicyInsights'; Version = '1.6.0' },
+    @{ Name = 'Az.Resources';      Version = '9.0.3' }
 )
 
 foreach ($mod in $modulesToImport) {
     $existingMod = Get-AzAutomationModule -ResourceGroupName $AUTOMATION_RG_NAME -AutomationAccountName $AUTOMATION_ACCOUNT_NAME -Name $mod.Name -ErrorAction SilentlyContinue
+    $needsImport = $true
+
     if ($existingMod -and $existingMod.ProvisioningState -eq 'Succeeded') {
-        Write-Host "  • $($mod.Name) — already imported." -ForegroundColor Green
-    } else {
+        $existingVersion = [string]$existingMod.Version
+        $desiredVersion = [string]$mod.Version
+
+        $existingParsed = $null
+        $desiredParsed = $null
+        $canCompare = ([version]::TryParse($existingVersion, [ref]$existingParsed) -and [version]::TryParse($desiredVersion, [ref]$desiredParsed))
+
+        if ($canCompare -and $existingParsed -ge $desiredParsed) {
+            Write-Host "  • $($mod.Name) v$existingVersion — already meets minimum v$desiredVersion." -ForegroundColor Green
+            $needsImport = $false
+        } else {
+            Write-Host "  • $($mod.Name) v$existingVersion is older than required v$desiredVersion. Re-importing..." -ForegroundColor Yellow
+            try {
+                Remove-AzAutomationModule `
+                    -ResourceGroupName     $AUTOMATION_RG_NAME `
+                    -AutomationAccountName $AUTOMATION_ACCOUNT_NAME `
+                    -Name                  $mod.Name `
+                    -Force | Out-Null
+
+                # Wait for module deletion to complete before re-import.
+                for ($i = 1; $i -le 20; $i++) {
+                    $modCheck = Get-AzAutomationModule -ResourceGroupName $AUTOMATION_RG_NAME -AutomationAccountName $AUTOMATION_ACCOUNT_NAME -Name $mod.Name -ErrorAction SilentlyContinue
+                    if (-not $modCheck) { break }
+                    Start-Sleep -Seconds 5
+                }
+            } catch {
+                Write-Warning "  • Could not remove existing module '$($mod.Name)': $($_.Exception.Message). Attempting import anyway."
+            }
+        }
+    } elseif ($existingMod) {
+        Write-Host "  • $($mod.Name) is in state '$($existingMod.ProvisioningState)'. Re-importing..." -ForegroundColor Yellow
+        try {
+            Remove-AzAutomationModule `
+                -ResourceGroupName     $AUTOMATION_RG_NAME `
+                -AutomationAccountName $AUTOMATION_ACCOUNT_NAME `
+                -Name                  $mod.Name `
+                -Force | Out-Null
+        } catch {
+            Write-Warning "  • Could not remove module '$($mod.Name)' in state '$($existingMod.ProvisioningState)': $($_.Exception.Message)."
+        }
+    }
+
+    if ($needsImport) {
         $contentUri = "$galleryUri/package/$($mod.Name)/$($mod.Version)"
         New-AzAutomationModule `
             -ResourceGroupName     $AUTOMATION_RG_NAME `
             -AutomationAccountName $AUTOMATION_ACCOUNT_NAME `
             -Name                  $mod.Name `
             -ContentLinkUri        $contentUri | Out-Null
-        Write-Host "  • $($mod.Name) — import started (may take a few minutes)." -ForegroundColor Yellow
+        Write-Host "  • $($mod.Name) v$($mod.Version) — import started (may take a few minutes)." -ForegroundColor Yellow
     }
 }
 
@@ -400,6 +447,7 @@ $automationVars = @(
     @{ Name = 'ManagementGroupId'; Value = $MG_ID },
     @{ Name = 'InitiativeName';    Value = $INITIATIVE_NAME },
     @{ Name = 'AssignmentName';    Value = $ASSIGNMENT_NAME },
+    @{ Name = 'FallbackSubscriptionIds'; Value = $fallbackSubscriptionIds },
     @{ Name = 'RunbookSourceVersion'; Value = $runbookVersion },
     @{ Name = 'RunbookSourceHash';    Value = $runbookHash }
 )
