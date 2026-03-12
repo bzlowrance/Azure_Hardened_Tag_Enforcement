@@ -30,9 +30,9 @@ try {
 }
 
 # Read configuration from Automation Account variables
-$mgId            = Get-AutomationVariable -Name 'ManagementGroupId'
-$initiativeName  = Get-AutomationVariable -Name 'InitiativeName'
-$assignmentName  = Get-AutomationVariable -Name 'AssignmentName'
+$mgId            = (Get-AutomationVariable -Name 'ManagementGroupId').Trim()
+$initiativeName  = (Get-AutomationVariable -Name 'InitiativeName').Trim()
+$assignmentName  = (Get-AutomationVariable -Name 'AssignmentName').Trim()
 $sourceVersion   = Get-AutomationVariable -Name 'RunbookSourceVersion' -ErrorAction SilentlyContinue
 $sourceHash      = Get-AutomationVariable -Name 'RunbookSourceHash' -ErrorAction SilentlyContinue
 
@@ -42,7 +42,7 @@ $assignmentId = "$mgScope/providers/Microsoft.Authorization/policyAssignments/$a
 $resolvedSourceVersion = if ([string]::IsNullOrWhiteSpace($sourceVersion)) { 'unset' } else { $sourceVersion }
 $resolvedSourceHash = if ([string]::IsNullOrWhiteSpace($sourceHash)) { 'unset' } else { $sourceHash }
 
-Write-Output "Management Group : $mgId"
+Write-Output "Management Group : '$mgId'"
 Write-Output "Initiative       : $initiativeName"
 Write-Output "Assignment       : $assignmentName"
 Write-Output "Runbook Version  : $resolvedSourceVersion"
