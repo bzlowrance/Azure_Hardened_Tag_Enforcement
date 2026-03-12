@@ -88,52 +88,107 @@ try {
     Write-Warning "Permission preflight check failed: $($_.Exception.Message)"
 }
 
-# ── Create remediation tasks at management group scope ───
+# ── Create remediation tasks (MG scope first, then sub fallback) ───
 Write-Output "Starting remediation tasks at MG scope..."
 
 $refIds = @('enforceOwnerTag', 'enforceCostCodeTag', 'enforceBusinessUnitTag', 'enforceRgOwnerTag', 'enforceRgCostCodeTag', 'enforceRgBusinessUnitTag')
 $remApiVersions = @('2021-10-01', '2019-07-01')
 $loggedFirstRemPath = $false
+$mgScopeUnauthorized = $false
 
-foreach ($refId in $refIds) {
-    $remName = "auto-rem-$refId-$(Get-Date -Format 'yyyyMMddHHmmss')"
+function Invoke-RemediationCreate {
+    param(
+        [Parameter(Mandatory=$true)][string]$Scope,
+        [Parameter(Mandatory=$true)][string]$RefId,
+        [Parameter(Mandatory=$true)][string]$AssignmentId,
+        [ref]$LoggedFirstPath
+    )
+
+    $remName = "auto-rem-$RefId-$(Get-Date -Format 'yyyyMMddHHmmss')"
     $remBody = @{
         properties = @{
-            policyAssignmentId          = $assignmentId
-            policyDefinitionReferenceId = $refId
+            policyAssignmentId          = $AssignmentId
+            policyDefinitionReferenceId = $RefId
         }
     } | ConvertTo-Json -Depth 10
 
-    $created = $false
+    $unauthorized = $false
     foreach ($apiVer in $remApiVersions) {
         try {
-            $remPath = "${mgScope}/providers/Microsoft.PolicyInsights/remediations/${remName}?api-version=${apiVer}"
+            $remPath = "${Scope}/providers/Microsoft.PolicyInsights/remediations/${remName}?api-version=${apiVer}"
             $remPath = ($remPath -replace '\s', '')
-            if (-not $loggedFirstRemPath) {
+            if (-not $LoggedFirstPath.Value) {
                 Write-Output "First Remediation Path: [$remPath]"
-                $loggedFirstRemPath = $true
+                $LoggedFirstPath.Value = $true
             }
+
             $remResp = Invoke-AzRestMethod -Path $remPath -Method PUT -Payload $remBody -ErrorAction Stop
             if ($remResp.StatusCode -ge 200 -and $remResp.StatusCode -lt 300) {
                 Write-Output "  Started: $remName"
-                $created = $true
-                break
-            } elseif ($remResp.StatusCode -eq 404) {
-                # API version not supported, try next
-                continue
-            } else {
-                $errContent = $remResp.Content | ConvertFrom-Json -ErrorAction SilentlyContinue
-                $errMsg = if ($errContent -and $errContent.error) { $errContent.error.message } else { "HTTP $($remResp.StatusCode)" }
-                Write-Warning "  Failed '$remName': $errMsg"
-                $created = $true  # Don't retry with another API version for auth/param errors
-                break
+                return @{ Created = $true; Unauthorized = $false }
             }
+
+            $errContent = $remResp.Content | ConvertFrom-Json -ErrorAction SilentlyContinue
+            $errMsg = if ($errContent -and $errContent.error) { $errContent.error.message } else { "HTTP $($remResp.StatusCode)" }
+            Write-Warning "  Failed '$remName': $errMsg"
+            if ($errMsg -match 'not have authorization|AuthorizationFailed|Microsoft\.PolicyInsights/remediations/write') {
+                $unauthorized = $true
+            }
+            return @{ Created = $false; Unauthorized = $unauthorized }
         } catch {
+            $exMsg = $_.Exception.Message
+            if ($exMsg -match 'not have authorization|AuthorizationFailed|Microsoft\.PolicyInsights/remediations/write') {
+                $unauthorized = $true
+            }
             continue
         }
     }
-    if (-not $created) {
-        Write-Warning "  Failed '$remName': No compatible API version found."
+
+    Write-Warning "  Failed '$remName': No compatible API version found."
+    return @{ Created = $false; Unauthorized = $unauthorized }
+}
+
+foreach ($refId in $refIds) {
+    $result = Invoke-RemediationCreate -Scope $mgScope -RefId $refId -AssignmentId $assignmentId -LoggedFirstPath ([ref]$loggedFirstRemPath)
+    if ($result.Unauthorized) {
+        $mgScopeUnauthorized = $true
+    }
+}
+
+if ($mgScopeUnauthorized) {
+    Write-Warning "MG-scope remediation creation was unauthorized. Falling back to subscription-scope remediation tasks."
+
+    $scanSubs = @(Get-AzManagementGroupSubscription -GroupId $mgId -ErrorAction SilentlyContinue)
+    if ($scanSubs.Count -eq 0) {
+        try {
+            $mgDescPath = "/providers/Microsoft.Management/managementGroups/${mgId}/descendants?api-version=2020-05-01"
+            $mgDescResp = Invoke-AzRestMethod -Path $mgDescPath -Method GET -ErrorAction Stop
+            if ($mgDescResp.StatusCode -eq 200) {
+                $descendants = ($mgDescResp.Content | ConvertFrom-Json).value
+                $scanSubs = @($descendants | Where-Object { $_.type -eq '/subscriptions' } | ForEach-Object {
+                    [PSCustomObject]@{
+                        Id          = $_.id
+                        DisplayName = $_.properties.displayName
+                    }
+                })
+            }
+        } catch {
+            Write-Warning "Subscription discovery fallback failed: $($_.Exception.Message)"
+        }
+    }
+
+    if ($scanSubs.Count -eq 0) {
+        Write-Warning "No subscriptions found under management group '$mgId'. Subscription-scope fallback cannot continue."
+    } else {
+        Write-Output "Fallback target subscriptions: $($scanSubs.Count)"
+        foreach ($sub in $scanSubs) {
+            $subId = ($sub.Id -split '/')[-1]
+            $subScope = "/subscriptions/$subId"
+            Write-Output "  Subscription scope: $subScope"
+            foreach ($refId in $refIds) {
+                $null = Invoke-RemediationCreate -Scope $subScope -RefId $refId -AssignmentId $assignmentId -LoggedFirstPath ([ref]$loggedFirstRemPath)
+            }
+        }
     }
 }
 
