@@ -155,8 +155,8 @@ if (-not $principalId) {
 }
 Write-Host "  Managed Identity Principal: $principalId" -ForegroundColor DarkGray
 
-# ── Step 3: Grant roles at management group scope ───────
-Write-Host "`n[3/6] Granting roles to managed identity at MG scope..." -ForegroundColor Yellow
+# ── Step 3: Grant roles at management group + subscription scope ──
+Write-Host "`n[3/6] Granting roles to managed identity..." -ForegroundColor Yellow
 $mgScope = "/providers/Microsoft.Management/managementGroups/$MG_ID"
 
 # Resource Policy Contributor (allows creating remediation tasks)
@@ -169,24 +169,38 @@ $rolesToAssign = @(
     @{ Name = 'Tag Contributor';             Id = $tagContribRoleId }
 )
 
-foreach ($role in $rolesToAssign) {
-    $roleAssignmentId = [guid]::NewGuid().ToString()
-    $roleAssignPath = "${mgScope}/providers/Microsoft.Authorization/roleAssignments/${roleAssignmentId}?api-version=2022-04-01"
-    $roleAssignBody = @{
-        properties = @{
-            principalId      = $principalId
-            roleDefinitionId = "${mgScope}/providers/Microsoft.Authorization/roleDefinitions/$($role.Id)"
-            principalType    = 'ServicePrincipal'
-        }
-    } | ConvertTo-Json -Depth 10
+# Collect all scopes: MG + each subscription under it
+# Gov doesn't always honor MG-level RBAC inheritance for PolicyInsights,
+# so we also assign roles at each subscription scope as a fallback.
+$allScopes = @($mgScope)
+$mgSubs = @(Get-AzManagementGroupSubscription -GroupId $MG_ID -ErrorAction SilentlyContinue)
+foreach ($sub in $mgSubs) {
+    $subId = ($sub.Id -split '/')[-1]
+    $allScopes += "/subscriptions/$subId"
+}
+Write-Host "  Assigning roles at $($allScopes.Count) scope(s) (MG + $($mgSubs.Count) subscription(s))..." -ForegroundColor DarkGray
 
-    $roleResp = Invoke-AzRestMethod -Path $roleAssignPath -Method PUT -Payload $roleAssignBody -ErrorAction SilentlyContinue
-    if ($roleResp.StatusCode -ge 200 -and $roleResp.StatusCode -lt 300) {
-        Write-Host "  • $($role.Name) — granted." -ForegroundColor Green
-    } elseif ($roleResp.StatusCode -eq 409) {
-        Write-Host "  • $($role.Name) — already assigned." -ForegroundColor Green
-    } else {
-        Write-Warning "  • $($role.Name) — role assignment returned HTTP $($roleResp.StatusCode). Remediation may fail."
+foreach ($scope in $allScopes) {
+    $scopeLabel = if ($scope -eq $mgScope) { "MG: $MG_ID" } else { "Sub: $($scope -replace '/subscriptions/','')" }
+    foreach ($role in $rolesToAssign) {
+        $roleAssignmentId = [guid]::NewGuid().ToString()
+        $roleAssignPath = "${scope}/providers/Microsoft.Authorization/roleAssignments/${roleAssignmentId}?api-version=2022-04-01"
+        $roleAssignBody = @{
+            properties = @{
+                principalId      = $principalId
+                roleDefinitionId = "/providers/Microsoft.Authorization/roleDefinitions/$($role.Id)"
+                principalType    = 'ServicePrincipal'
+            }
+        } | ConvertTo-Json -Depth 10
+
+        $roleResp = Invoke-AzRestMethod -Path $roleAssignPath -Method PUT -Payload $roleAssignBody -ErrorAction SilentlyContinue
+        if ($roleResp.StatusCode -ge 200 -and $roleResp.StatusCode -lt 300) {
+            Write-Host "  • [$scopeLabel] $($role.Name) — granted." -ForegroundColor Green
+        } elseif ($roleResp.StatusCode -eq 409) {
+            Write-Host "  • [$scopeLabel] $($role.Name) — already assigned." -ForegroundColor Green
+        } else {
+            Write-Warning "  • [$scopeLabel] $($role.Name) — HTTP $($roleResp.StatusCode)."
+        }
     }
 }
 

@@ -7,7 +7,8 @@
     This runbook runs on a recurring schedule inside an Azure Automation Account.
     It authenticates using the Automation Account's system-assigned managed identity,
     then creates remediation tasks for each policy definition in the tag enforcement
-    initiative at management group scope.
+    initiative. Remediations are created per-subscription (MG-scope remediation is
+    unreliable with managed identities in Azure Government).
 
     Configuration is read from Automation Account variables:
         - ManagementGroupId   : Target management group
@@ -40,10 +41,17 @@ Write-Output "Management Group : $mgId"
 Write-Output "Initiative       : $initiativeName"
 Write-Output "Assignment       : $assignmentName"
 
+# ── Enumerate subscriptions under the management group ──
+$scanSubs = @(Get-AzManagementGroupSubscription -GroupId $mgId -ErrorAction SilentlyContinue)
+if ($scanSubs.Count -eq 0) {
+    Write-Warning "No subscriptions found under management group '$mgId'. Nothing to do."
+    return
+}
+Write-Output "Found $($scanSubs.Count) subscription(s) under '$mgId'."
+
 # ── Trigger policy evaluation scan per subscription ─────
 Write-Output "Triggering policy evaluation scans..."
 
-$scanSubs = @(Get-AzManagementGroupSubscription -GroupId $mgId -ErrorAction SilentlyContinue)
 foreach ($sub in $scanSubs) {
     $subId   = ($sub.Id -split '/')[-1]
     $subName = if ($sub.DisplayName) { $sub.DisplayName } else { $subId }
@@ -64,15 +72,22 @@ foreach ($sub in $scanSubs) {
 Write-Output "Waiting 30 seconds for evaluation to begin..."
 Start-Sleep -Seconds 30
 
-# ── Create remediation tasks ──────────────────────────
+# ── Create remediation tasks per subscription ────────────
+# MG-scope remediations fail with 403 for managed identities in Azure Gov.
+# Creating remediations at subscription scope works reliably.
 Write-Output "Starting remediation tasks..."
 
 $refIds = @('enforceOwnerTag', 'enforceCostCodeTag', 'enforceBusinessUnitTag', 'enforceRgOwnerTag', 'enforceRgCostCodeTag', 'enforceRgBusinessUnitTag')
-foreach ($refId in $refIds) {
-    $remName = "auto-remediate-$refId-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
-    try {
-        # Use REST API — Start-AzPolicyRemediation can fail with 403 in Gov even when roles are assigned
-        $remPath = "${mgScope}/providers/Microsoft.PolicyInsights/remediations/${remName}?api-version=2021-10-01"
+$remApiVersions = @('2021-10-01', '2019-07-01')
+
+foreach ($sub in $scanSubs) {
+    $subId   = ($sub.Id -split '/')[-1]
+    $subName = if ($sub.DisplayName) { $sub.DisplayName } else { $subId }
+    $subScope = "/subscriptions/$subId"
+    Write-Output "  Subscription: $subName ($subId)"
+
+    foreach ($refId in $refIds) {
+        $remName = "auto-rem-$refId-$(Get-Date -Format 'yyyyMMddHHmmss')"
         $remBody = @{
             properties = @{
                 policyAssignmentId          = $assignmentId
@@ -80,16 +95,32 @@ foreach ($refId in $refIds) {
             }
         } | ConvertTo-Json -Depth 10
 
-        $remResp = Invoke-AzRestMethod -Path $remPath -Method PUT -Payload $remBody -ErrorAction Stop
-        if ($remResp.StatusCode -ge 200 -and $remResp.StatusCode -lt 300) {
-            Write-Output "  Started: $remName"
-        } else {
-            $errContent = $remResp.Content | ConvertFrom-Json -ErrorAction SilentlyContinue
-            $errMsg = if ($errContent -and $errContent.error) { $errContent.error.message } else { "HTTP $($remResp.StatusCode)" }
-            Write-Warning "  Failed to start remediation '$remName': $errMsg"
+        $created = $false
+        foreach ($apiVer in $remApiVersions) {
+            try {
+                $remPath = "${subScope}/providers/Microsoft.PolicyInsights/remediations/${remName}?api-version=${apiVer}"
+                $remResp = Invoke-AzRestMethod -Path $remPath -Method PUT -Payload $remBody -ErrorAction Stop
+                if ($remResp.StatusCode -ge 200 -and $remResp.StatusCode -lt 300) {
+                    Write-Output "    Started: $remName"
+                    $created = $true
+                    break
+                } elseif ($remResp.StatusCode -eq 404) {
+                    # API version not supported, try next
+                    continue
+                } else {
+                    $errContent = $remResp.Content | ConvertFrom-Json -ErrorAction SilentlyContinue
+                    $errMsg = if ($errContent -and $errContent.error) { $errContent.error.message } else { "HTTP $($remResp.StatusCode)" }
+                    Write-Warning "    Failed '$remName': $errMsg"
+                    $created = $true  # Don't retry with another API version for auth/param errors
+                    break
+                }
+            } catch {
+                continue
+            }
         }
-    } catch {
-        Write-Warning "  Failed to start remediation '$remName': $($_.Exception.Message)"
+        if (-not $created) {
+            Write-Warning "    Failed '$remName': No compatible API version found."
+        }
     }
 }
 
