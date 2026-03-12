@@ -83,179 +83,129 @@ Write-Output "Runbook Hash     : $resolvedSourceHash"
 Write-Output "Remediation Scope: [$mgScope]"
 Write-Output "Fallback Subs Var: [$fallbackSubIdsRaw]"
 
-# Preflight diagnostics: print caller and effective permissions at MG scope
-try {
-    $ctx = Get-AzContext
-    if ($ctx -and $ctx.Account) {
-        Write-Output "Auth Account ID  : $($ctx.Account.Id)"
-    }
+# ── Diagnostics: print identity context details ─────────
+$ctx = Get-AzContext
+$envName   = if ($ctx -and $ctx.Environment)   { $ctx.Environment.Name }   else { 'unknown' }
+$tenantId  = if ($ctx -and $ctx.Tenant)        { [string]$ctx.Tenant.Id } else { $null }
+$ctxSubId  = if ($ctx -and $ctx.Subscription)  { [string]$ctx.Subscription.Id } else { $null }
 
-    $permPath = "${mgScope}/providers/Microsoft.Authorization/permissions?api-version=2022-04-01"
-    $permResp = Invoke-AzRestMethod -Path $permPath -Method GET -ErrorAction Stop
-    if ($permResp.StatusCode -eq 200) {
-        $permissions = (($permResp.Content | ConvertFrom-Json).value | ForEach-Object { $_.actions })
-        $hasWritePermission = $false
-        foreach ($actionSet in $permissions) {
-            if ($actionSet -contains '*') { $hasWritePermission = $true; break }
-            if ($actionSet -contains 'Microsoft.PolicyInsights/*') { $hasWritePermission = $true; break }
-            if ($actionSet -contains 'Microsoft.PolicyInsights/remediations/*') { $hasWritePermission = $true; break }
-            if ($actionSet -contains 'Microsoft.PolicyInsights/remediations/write') { $hasWritePermission = $true; break }
-        }
+Write-Output "Auth Account ID  : $($ctx.Account.Id)"
+Write-Output "Environment      : $envName"
+Write-Output "Tenant           : $(if ($tenantId) { $tenantId } else { '(none)' })"
+Write-Output "Context Sub      : $(if ($ctxSubId) { $ctxSubId } else { '(none)' })"
 
-        if ($hasWritePermission) {
-            Write-Output "Permission Check : Microsoft.PolicyInsights/remediations/write = ALLOWED"
-        } else {
-            Write-Warning "Permission Check : Microsoft.PolicyInsights/remediations/write = NOT FOUND"
-        }
-    }
-} catch {
-    Write-Warning "Permission preflight check failed: $($_.Exception.Message)"
+# ── Ensure a subscription is active in the context ──────
+# Start-AzPolicyRemediation (and most ARM cmdlets) require a subscription
+# in the current context to route requests through the correct ARM regional
+# endpoint — even when the operation targets management-group scope.
+# This mirrors Deploy_Tag_Policies.ps1 which calls Set-AzContext before remediation.
+
+$effectiveSubId = $null
+
+# 1. Use the subscription already in context (Automation Account's subscription)
+if (-not [string]::IsNullOrWhiteSpace($ctxSubId)) {
+    $effectiveSubId = $ctxSubId
+    Write-Output "Using context subscription: $effectiveSubId"
 }
 
-# ── Create remediation tasks (MG scope first, then sub fallback) ───
-Write-Output "Starting remediation tasks at MG scope..."
+# 2. Try fallback subscription IDs from automation variable
+if ([string]::IsNullOrWhiteSpace($effectiveSubId) -and -not [string]::IsNullOrWhiteSpace($fallbackSubIdsRaw)) {
+    $fallbackSubIds = @($fallbackSubIdsRaw -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    foreach ($subId in $fallbackSubIds) {
+        try {
+            $setParams = @{ SubscriptionId = $subId; Force = $true; ErrorAction = 'Stop' }
+            if (-not [string]::IsNullOrWhiteSpace($tenantId)) { $setParams['TenantId'] = $tenantId }
+            Set-AzContext @setParams | Out-Null
+            $effectiveSubId = $subId
+            Write-Output "Set context to fallback subscription: $effectiveSubId"
+            break
+        } catch {
+            Write-Warning "Could not set context to subscription '$subId': $($_.Exception.Message)"
+        }
+    }
+}
+
+# 3. Discover subscriptions under the management group
+if ([string]::IsNullOrWhiteSpace($effectiveSubId)) {
+    try {
+        $mgSubs = @(Get-AzManagementGroupSubscription -GroupId $mgId -ErrorAction Stop)
+        foreach ($mgSub in $mgSubs) {
+            $discoveredSubId = ($mgSub.Id -split '/')[-1]
+            try {
+                $setParams = @{ SubscriptionId = $discoveredSubId; Force = $true; ErrorAction = 'Stop' }
+                if (-not [string]::IsNullOrWhiteSpace($tenantId)) { $setParams['TenantId'] = $tenantId }
+                Set-AzContext @setParams | Out-Null
+                $effectiveSubId = $discoveredSubId
+                Write-Output "Set context to discovered subscription: $effectiveSubId"
+                break
+            } catch {
+                Write-Warning "Could not set context to discovered subscription '$discoveredSubId': $($_.Exception.Message)"
+            }
+        }
+    } catch {
+        Write-Warning "Could not list subscriptions under MG '$mgId': $($_.Exception.Message)"
+    }
+}
+
+if ([string]::IsNullOrWhiteSpace($effectiveSubId)) {
+    Write-Error "No subscription context available. The managed identity must have Reader access on at least one subscription under the management group. Set automation variable 'FallbackSubscriptionIds'."
+    throw "No subscription context available."
+}
+
+Write-Output "Effective Sub    : $effectiveSubId"
+
+# ── Create remediation tasks using Start-AzPolicyRemediation ────
+# This uses the same PowerShell cmdlet that works successfully in
+# Deploy_Tag_Policies.ps1. The cmdlet handles ARM endpoint routing,
+# API version selection, and token acquisition correctly — including
+# Azure Government managed identities.
+Write-Output "Starting remediation tasks..."
 
 $refIds = @('enforceOwnerTag', 'enforceCostCodeTag', 'enforceBusinessUnitTag', 'enforceRgOwnerTag', 'enforceRgCostCodeTag', 'enforceRgBusinessUnitTag')
-$remApiVersions = @('2021-10-01', '2019-07-01')
-$loggedFirstRemPath = $false
-$mgScopeUnauthorized = $false
 
-function Invoke-RemediationCreate {
-    param(
-        [Parameter(Mandatory=$true)][string]$Scope,
-        [Parameter(Mandatory=$true)][string]$RefId,
-        [Parameter(Mandatory=$true)][string]$AssignmentId,
-        [ref]$LoggedFirstPath
-    )
-
-    $remName = "auto-rem-$RefId-$(Get-Date -Format 'yyyyMMddHHmmss')"
-    $remBody = @{
-        properties = @{
-            policyAssignmentId          = $AssignmentId
-            policyDefinitionReferenceId = $RefId
-        }
-    } | ConvertTo-Json -Depth 10
-
-    $unauthorized = $false
-    foreach ($apiVer in $remApiVersions) {
-        try {
-            $remPath = "${Scope}/providers/Microsoft.PolicyInsights/remediations/${remName}?api-version=${apiVer}"
-            $remPath = ($remPath -replace '\s', '')
-            if (-not $LoggedFirstPath.Value) {
-                Write-Output "First Remediation Path: [$remPath]"
-                $LoggedFirstPath.Value = $true
-            }
-
-            $remResp = Invoke-AzRestMethod -Path $remPath -Method PUT -Payload $remBody -ErrorAction Stop
-            if ($remResp.StatusCode -ge 200 -and $remResp.StatusCode -lt 300) {
-                Write-Output "  Started: $remName"
-                return @{ Created = $true; Unauthorized = $false }
-            }
-
-            $errContent = $remResp.Content | ConvertFrom-Json -ErrorAction SilentlyContinue
-            $errMsg = if ($errContent -and $errContent.error) { $errContent.error.message } else { "HTTP $($remResp.StatusCode)" }
-            Write-Warning "  Failed '$remName': $errMsg"
-            if ($errMsg -match 'not have authorization|AuthorizationFailed|Microsoft\.PolicyInsights/remediations/write') {
-                $unauthorized = $true
-            }
-            return @{ Created = $false; Unauthorized = $unauthorized }
-        } catch {
-            $exMsg = $_.Exception.Message
-            if ($exMsg -match 'not have authorization|AuthorizationFailed|Microsoft\.PolicyInsights/remediations/write') {
-                $unauthorized = $true
-            }
-            continue
-        }
-    }
-
-    Write-Warning "  Failed '$remName': No compatible API version found."
-    return @{ Created = $false; Unauthorized = $unauthorized }
-}
+$successCount = 0
+$failCount    = 0
 
 foreach ($refId in $refIds) {
-    $result = Invoke-RemediationCreate -Scope $mgScope -RefId $refId -AssignmentId $assignmentId -LoggedFirstPath ([ref]$loggedFirstRemPath)
-    if ($result.Unauthorized) {
-        $mgScopeUnauthorized = $true
-    }
-}
+    $remName = "auto-rem-$refId-$(Get-Date -Format 'yyyyMMddHHmmss')"
+    $created = $false
 
-if ($mgScopeUnauthorized) {
-    Write-Warning "MG-scope remediation creation was unauthorized. Falling back to subscription-scope remediation tasks."
+    # Attempt MG-scope remediation (matches Deploy_Tag_Policies.ps1 approach)
+    try {
+        Start-AzPolicyRemediation `
+            -Name                        $remName `
+            -PolicyAssignmentId          $assignmentId `
+            -PolicyDefinitionReferenceId $refId `
+            -Scope                       $mgScope `
+            -ErrorAction Stop | Out-Null
 
-    $scanSubIds = @()
-    if (-not [string]::IsNullOrWhiteSpace($fallbackSubIdsRaw)) {
-        $scanSubIds = @($fallbackSubIdsRaw -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
-        if ($scanSubIds.Count -gt 0) {
-            Write-Output "Using fallback subscription IDs from automation variable. Count: $($scanSubIds.Count)"
-        }
-    }
-
-    if ($scanSubIds.Count -eq 0) {
-        $scanSubs = @(Get-AzManagementGroupSubscription -GroupId $mgId -ErrorAction SilentlyContinue)
-        $scanSubIds = @($scanSubs | ForEach-Object { ($_.Id -split '/')[-1] } | Where-Object { $_ })
+        Write-Output "  Started: $remName (MG scope)"
+        $created = $true
+        $successCount++
+    } catch {
+        Write-Warning "  MG-scope failed for '$refId': $($_.Exception.Message)"
     }
 
-    if ($scanSubIds.Count -eq 0) {
+    # Subscription-scope fallback
+    if (-not $created) {
+        $subScope = "/subscriptions/$effectiveSubId"
         try {
-            $mgDescPath = "/providers/Microsoft.Management/managementGroups/${mgId}/descendants?api-version=2020-05-01"
-            $mgDescResp = Invoke-AzRestMethod -Path $mgDescPath -Method GET -ErrorAction Stop
-            if ($mgDescResp.StatusCode -eq 200) {
-                $descendants = ($mgDescResp.Content | ConvertFrom-Json).value
-                $scanSubIds = @($descendants | Where-Object { $_.type -eq '/subscriptions' } | ForEach-Object { ($_.id -split '/')[-1] } | Where-Object { $_ })
-            }
+            Start-AzPolicyRemediation `
+                -Name                        $remName `
+                -PolicyAssignmentId          $assignmentId `
+                -PolicyDefinitionReferenceId $refId `
+                -Scope                       $subScope `
+                -ErrorAction Stop | Out-Null
+
+            Write-Output "  Started: $remName (subscription fallback: $effectiveSubId)"
+            $created = $true
+            $successCount++
         } catch {
-            Write-Warning "Subscription discovery fallback failed: $($_.Exception.Message)"
-        }
-    }
-
-    if ($scanSubIds.Count -eq 0) {
-        $ctxSubId = $null
-        try {
-            $ctx = Get-AzContext
-            if ($ctx -and $ctx.Subscription -and $ctx.Subscription.Id) {
-                $ctxSubId = [string]$ctx.Subscription.Id
-            }
-        } catch {
-            $ctxSubId = $null
-        }
-
-        if (-not [string]::IsNullOrWhiteSpace($ctxSubId)) {
-            $scanSubIds = @($ctxSubId)
-            Write-Warning "Using current context subscription for fallback: $ctxSubId"
-        }
-    }
-
-    if ($scanSubIds.Count -eq 0) {
-        Write-Warning "No subscriptions found under management group '$mgId'. Subscription-scope fallback cannot continue. Set automation variable 'FallbackSubscriptionIds'."
-    } else {
-        $scanSubIds = @($scanSubIds | Select-Object -Unique)
-        Write-Output "Fallback target subscriptions: $($scanSubIds.Count)"
-        foreach ($subId in $scanSubIds) {
-            $subScope = "/subscriptions/$subId"
-            Write-Output "  Subscription scope: $subScope"
-
-            $subReachable = $false
-            try {
-                Set-AzContext -SubscriptionId $subId -ErrorAction Stop | Out-Null
-                $subInfoResp = Invoke-AzRestMethod -Path "/subscriptions/$subId?api-version=2020-01-01" -Method GET -ErrorAction Stop
-                if ($subInfoResp.StatusCode -eq 200) {
-                    $subReachable = $true
-                    Write-Output "  Subscription access check passed: $subId"
-                }
-            } catch {
-                Write-Warning "  Subscription access check failed for '$subId': $($_.Exception.Message)"
-            }
-
-            if (-not $subReachable) {
-                Write-Warning "  Skipping remediation at subscription scope '$subId' because subscription is not reachable in current context."
-                continue
-            }
-
-            foreach ($refId in $refIds) {
-                $null = Invoke-RemediationCreate -Scope $subScope -RefId $refId -AssignmentId $assignmentId -LoggedFirstPath ([ref]$loggedFirstRemPath)
-            }
+            Write-Warning "  Subscription fallback also failed for '$refId': $($_.Exception.Message)"
+            $failCount++
         }
     }
 }
 
+Write-Output "Remediation summary: $successCount succeeded, $failCount failed out of $($refIds.Count) policies."
 Write-Output "Auto-remediation runbook complete."

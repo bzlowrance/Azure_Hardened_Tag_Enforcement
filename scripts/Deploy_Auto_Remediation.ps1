@@ -249,6 +249,7 @@ $readerRoleId     = "acdd72a7-3385-48ef-bd42-f606fba81ae7"
 
 $mgRolesToAssign = @(
     @{ Name = 'Tag Enforcement Remediation Operator'; DefinitionId = $customRoleFullId; RoleId = $customRoleDefId },
+    @{ Name = 'Resource Policy Contributor';          DefinitionId = "/providers/Microsoft.Authorization/roleDefinitions/$policyContribRoleId"; RoleId = $policyContribRoleId },
     @{ Name = 'Tag Contributor';                      DefinitionId = "/providers/Microsoft.Authorization/roleDefinitions/$tagContribRoleId"; RoleId = $tagContribRoleId },
     @{ Name = 'Reader';                               DefinitionId = "/providers/Microsoft.Authorization/roleDefinitions/$readerRoleId"; RoleId = $readerRoleId }
 )
