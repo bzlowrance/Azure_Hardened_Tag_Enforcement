@@ -39,11 +39,14 @@ $sourceHash      = Get-AutomationVariable -Name 'RunbookSourceHash' -ErrorAction
 $mgScope = "/providers/Microsoft.Management/managementGroups/$mgId"
 $assignmentId = "$mgScope/providers/Microsoft.Authorization/policyAssignments/$assignmentName"
 
+$resolvedSourceVersion = if ([string]::IsNullOrWhiteSpace($sourceVersion)) { 'unset' } else { $sourceVersion }
+$resolvedSourceHash = if ([string]::IsNullOrWhiteSpace($sourceHash)) { 'unset' } else { $sourceHash }
+
 Write-Output "Management Group : $mgId"
 Write-Output "Initiative       : $initiativeName"
 Write-Output "Assignment       : $assignmentName"
-Write-Output "Runbook Version  : $($sourceVersion ? $sourceVersion : 'unset')"
-Write-Output "Runbook Hash     : $($sourceHash ? $sourceHash : 'unset')"
+Write-Output "Runbook Version  : $resolvedSourceVersion"
+Write-Output "Runbook Hash     : $resolvedSourceHash"
 
 # ── Create remediation tasks at management group scope ───
 Write-Output "Starting remediation tasks at MG scope..."
