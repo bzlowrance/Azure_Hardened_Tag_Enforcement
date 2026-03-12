@@ -222,23 +222,35 @@ After creating or updating the assignment, run a remediation task:
 3. Choose the policies to remediate
 4. Submit
 
-## Auto-remediation
+## Auto-remediation runbook
 
-The `modify` policy effect automatically corrects tags on resource **create and update** operations. For pre-existing resources (or resources that haven't been modified since the policy was assigned), a recurring remediation job ensures they are caught.
+The `modify` effect enforces tags during resource create/update operations. Existing resources (or resources not touched since assignment) require remediation tasks. The runbook provides recurring, hands-off remediation at management group scope.
 
-`Deploy_Auto_Remediation.ps1` creates:
+### When the runbook is needed
+
+Use `Deploy_Auto_Remediation.ps1` for these scenarios:
+
+1. Initial rollout to a management group with existing subscriptions/resources.
+2. After changing values in `assignment-parameters.json` and needing those changes applied to existing resources/resource groups.
+3. Environments with ongoing manual tag drift where periodic remediation is required.
+4. Resource group tag enforcement where legacy RGs must be corrected without waiting for writes.
+
+### What gets deployed
+
+`Deploy_Auto_Remediation.ps1` creates/updates:
 
 | Resource | Purpose |
 |---|---|
 | **Azure Automation Account** | Hosts the runbook with a system-assigned managed identity |
-| **PowerShell Runbook** | Triggers policy evaluation scan + remediation tasks |
-| **Recurring Schedule** | Runs every N hours (configurable via `AUTOMATION_SCHEDULE_HOURS` in `.env`) |
-| **Role Assignments** | Resource Policy Contributor + Tag Contributor at MG scope |
+| **PowerShell Runbook** (`AutoRemediation_Runbook.ps1`) | Creates policy remediation tasks for all six policy references at MG scope |
+| **Recurring Schedule** | Runs every N hours (`AUTOMATION_SCHEDULE_HOURS`) |
+| **Custom RBAC Role** (`Tag Enforcement Remediation Operator`) | Grants explicit `Microsoft.PolicyInsights/remediations/*` actions at MG scope |
+| **Role Assignments** | Custom role + `Tag Contributor` + `Reader` at MG scope |
 
 ### Setup
 
 ```powershell
-# After deploying the policies:
+# After deploying policies and assignment
 .\scripts\Deploy_Auto_Remediation.ps1
 ```
 
@@ -248,14 +260,30 @@ The `modify` policy effect automatically corrects tags on resource **create and 
 |---|---|---|
 | `AUTOMATION_ACCOUNT_NAME` | `aa-tag-remediation` | Name of the Automation Account |
 | `AUTOMATION_RG_NAME` | `rg-tag-automation` | Resource group for the Automation Account |
-| `AUTOMATION_SCHEDULE_HOURS` | `6` | How often the runbook runs (in hours) |
+| `AUTOMATION_SCHEDULE_HOURS` | `6` | Runbook cadence in hours |
 
-### How it works
+### Parameter file updates and impact
 
-1. Authenticates using the Automation Account's managed identity
-2. Triggers a policy evaluation scan on each subscription under the management group
-3. Creates remediation tasks for all six tag policies (3 resource + 3 resource group)
-4. Repeats on the configured schedule
+`assignment-parameters.json` remains the source of truth for tag values and overrides for both resources and resource groups.
+
+No new runbook-specific fields are required in `assignment-parameters.json`.
+
+Important constraints in `assignment-parameters.json`:
+
+1. Keep placeholder keys required by Azure Gov policy validation:
+  - RG override maps: `"disabled": ""`
+  - Resource override maps: `"disabled/disabled": ""`
+2. RG override keys must match real RG names exactly.
+3. Resource override keys must use `<rgName>/<resourceName>`.
+
+After editing `assignment-parameters.json`, re-run `Deploy_Tag_Policies.ps1` (or update assignment parameters in portal), then run/allow the runbook schedule to remediate existing resources.
+
+### Runbook behavior
+
+1. Authenticates using Automation Account managed identity.
+2. Normalizes and validates management group ID from Automation variables.
+3. Logs runbook version/hash and computed remediation scope for traceability.
+4. Creates MG-scoped remediation tasks for all six policy references.
 
 ## Cleanup
 

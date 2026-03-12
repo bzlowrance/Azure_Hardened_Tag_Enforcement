@@ -93,6 +93,7 @@ Write-Output "Starting remediation tasks at MG scope..."
 
 $refIds = @('enforceOwnerTag', 'enforceCostCodeTag', 'enforceBusinessUnitTag', 'enforceRgOwnerTag', 'enforceRgCostCodeTag', 'enforceRgBusinessUnitTag')
 $remApiVersions = @('2021-10-01', '2019-07-01')
+$loggedFirstRemPath = $false
 
 foreach ($refId in $refIds) {
     $remName = "auto-rem-$refId-$(Get-Date -Format 'yyyyMMddHHmmss')"
@@ -107,6 +108,11 @@ foreach ($refId in $refIds) {
     foreach ($apiVer in $remApiVersions) {
         try {
             $remPath = "${mgScope}/providers/Microsoft.PolicyInsights/remediations/${remName}?api-version=${apiVer}"
+            $remPath = ($remPath -replace '\s', '')
+            if (-not $loggedFirstRemPath) {
+                Write-Output "First Remediation Path: [$remPath]"
+                $loggedFirstRemPath = $true
+            }
             $remResp = Invoke-AzRestMethod -Path $remPath -Method PUT -Payload $remBody -ErrorAction Stop
             if ($remResp.StatusCode -ge 200 -and $remResp.StatusCode -lt 300) {
                 Write-Output "  Started: $remName"
