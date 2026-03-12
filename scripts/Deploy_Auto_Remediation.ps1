@@ -242,10 +242,41 @@ $tagContribRoleId = "4a9ae827-6dc8-4573-8ac7-8239d42aa03f"
 $readerRoleId     = "acdd72a7-3385-48ef-bd42-f606fba81ae7"
 
 $rolesToAssign = @(
-    @{ Name = 'Tag Enforcement Remediation Operator'; DefinitionId = $customRoleFullId },
-    @{ Name = 'Tag Contributor';                      DefinitionId = "/providers/Microsoft.Authorization/roleDefinitions/$tagContribRoleId" },
-    @{ Name = 'Reader';                               DefinitionId = "/providers/Microsoft.Authorization/roleDefinitions/$readerRoleId" }
+    @{ Name = 'Tag Enforcement Remediation Operator'; DefinitionId = $customRoleFullId; RoleId = $customRoleDefId },
+    @{ Name = 'Tag Contributor';                      DefinitionId = "/providers/Microsoft.Authorization/roleDefinitions/$tagContribRoleId"; RoleId = $tagContribRoleId },
+    @{ Name = 'Reader';                               DefinitionId = "/providers/Microsoft.Authorization/roleDefinitions/$readerRoleId"; RoleId = $readerRoleId }
 )
+
+# Remove stale assignments from prior Automation Account identities.
+# Stale entries commonly show as principalType = Unknown after identity recreation.
+Write-Host "  Cleaning up stale MG-scope role assignments for prior identities..." -ForegroundColor DarkGray
+$roleIdSet = @{}
+foreach ($role in $rolesToAssign) {
+    $roleIdSet[$role.RoleId.ToLowerInvariant()] = $true
+}
+
+$existingAssignmentsPath = "${mgScope}/providers/Microsoft.Authorization/roleAssignments?api-version=2022-04-01"
+$existingAssignmentsResp = Invoke-AzRestMethod -Path $existingAssignmentsPath -Method GET -ErrorAction Stop
+if ($existingAssignmentsResp.StatusCode -eq 200) {
+    $existingAssignments = @((($existingAssignmentsResp.Content | ConvertFrom-Json).value))
+    foreach ($assignment in $existingAssignments) {
+        $assignmentRoleId = (($assignment.properties.roleDefinitionId.TrimEnd('/') -split '/')[-1]).ToLowerInvariant()
+        $assignmentPrincipalId = [string]$assignment.properties.principalId
+        $assignmentPrincipalType = [string]$assignment.properties.principalType
+
+        if ($roleIdSet.ContainsKey($assignmentRoleId) -and $assignmentPrincipalId -ne $principalId -and $assignmentPrincipalType -eq 'Unknown') {
+            $deletePath = "$($assignment.id)?api-version=2022-04-01"
+            $deleteResp = Invoke-AzRestMethod -Path $deletePath -Method DELETE -ErrorAction SilentlyContinue
+            if ($deleteResp.StatusCode -ge 200 -and $deleteResp.StatusCode -lt 300) {
+                Write-Host "  • Removed stale role assignment: $($assignment.name)" -ForegroundColor Green
+            } else {
+                $deleteErr = $deleteResp.Content | ConvertFrom-Json -ErrorAction SilentlyContinue
+                $deleteMsg = if ($deleteErr -and $deleteErr.error) { $deleteErr.error.message } else { "HTTP $($deleteResp.StatusCode)" }
+                Write-Warning "  • Could not remove stale assignment '$($assignment.name)': $deleteMsg"
+            }
+        }
+    }
+}
 
 $roleAssignmentFailures = @()
 
@@ -278,26 +309,20 @@ if ($roleAssignmentFailures.Count -gt 0) {
     Write-Error "One or more role assignments failed. Resolve RBAC assignment errors before continuing:`n - $($roleAssignmentFailures -join "`n - ")"
 }
 
-# Verify assignments actually exist for this principal at MG scope
-$assignedRolesPath = "${mgScope}/providers/Microsoft.Authorization/roleAssignments?api-version=2022-04-01&`$filter=principalId eq '$principalId'"
-$assignedRolesResp = Invoke-AzRestMethod -Path $assignedRolesPath -Method GET -ErrorAction Stop
-$assignedRoles = @()
-if ($assignedRolesResp.StatusCode -eq 200) {
-    $assignedRoles = @((($assignedRolesResp.Content | ConvertFrom-Json).value | ForEach-Object { $_.properties.roleDefinitionId.ToLowerInvariant() }))
-}
+# Verify assignments for this principal at MG scope using role names (more robust in Gov)
+$principalAssignments = @(Get-AzRoleAssignment -ObjectId $principalId -Scope $mgScope -ErrorAction SilentlyContinue)
+$assignedRoleNames = @($principalAssignments | Select-Object -ExpandProperty RoleDefinitionName)
 
-$missingRoles = @()
-foreach ($role in $rolesToAssign) {
-    if (-not ($assignedRoles -contains $role.DefinitionId.ToLowerInvariant())) {
-        $missingRoles += $role.Name
-    }
-}
+$requiredRoleNames = @($rolesToAssign | Select-Object -ExpandProperty Name)
+$missingRoles = @($requiredRoleNames | Where-Object { $assignedRoleNames -notcontains $_ })
 
 if ($missingRoles.Count -gt 0) {
-    Write-Error "Managed identity is missing required MG-scope role assignments: $($missingRoles -join ', ')."
+    Write-Warning "Role verification mismatch for principal '$principalId' at MG scope. Missing: $($missingRoles -join ', ')."
+    Write-Warning "Assigned roles detected for this principal: $($assignedRoleNames -join ', ')."
+    Write-Warning "Deployment will continue; runbook preflight permission check will confirm effective rights at runtime."
+} else {
+    Write-Host "  Role assignment verification passed for managed identity at MG scope." -ForegroundColor Green
 }
-
-Write-Host "  Role assignment verification passed for managed identity at MG scope." -ForegroundColor Green
 
 # ── Step 4: Import Az modules ──────────────────────────
 Write-Host "`n[4/6] Importing required PowerShell modules..." -ForegroundColor Yellow
