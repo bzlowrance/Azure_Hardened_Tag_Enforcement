@@ -263,6 +263,27 @@ for ($pass = 1; $pass -le $maxPasses; $pass++) {
         if (-not $allSucceeded) {
             Write-Warning "Timed out waiting for remediation tasks. Continuing to evaluation scan."
         }
+
+        # ── Check deployment counts — if 0 across all tasks, nothing was left to fix ──
+        $totalDeployed = 0
+        foreach ($rem in $passRemNames) {
+            try {
+                $r = Get-AzPolicyRemediation -Name $rem.Name -Scope $rem.Scope -ErrorAction Stop
+                $deployed = if ($r.DeploymentSummary) { $r.DeploymentSummary.TotalDeployments } else { 0 }
+                Write-Output "  $($rem.Name): $deployed deployment(s)"
+                $totalDeployed += $deployed
+            } catch {
+                Write-Warning "  Could not read deployment summary for $($rem.Name): $($_.Exception.Message)"
+            }
+        }
+
+        if ($totalDeployed -eq 0) {
+            Write-Output "  All remediation tasks deployed 0 resources — environment is fully compliant."
+            $pass = $maxPasses  # exit outer loop
+            continue
+        } else {
+            Write-Output "  Total resources remediated this pass: $totalDeployed"
+        }
     } else {
         Write-Output "No remediation tasks started — waiting 30s before evaluation scan..."
         Start-Sleep -Seconds 30
