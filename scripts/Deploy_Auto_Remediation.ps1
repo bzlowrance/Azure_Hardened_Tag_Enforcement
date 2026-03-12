@@ -240,24 +240,32 @@ Start-Sleep -Seconds 15
 # ── 3b: Assign roles at MG scope ──
 # Custom role for PolicyInsights remediation permissions
 $customRoleFullId = "${mgScope}/providers/Microsoft.Authorization/roleDefinitions/${customRoleDefId}"
+# Resource Policy Contributor (preferred for sub-scope remediation creation)
+$policyContribRoleId = "36243c78-bf99-498c-9df9-86d9f8d28608"
 # Tag Contributor (allows modifying tags via policy remediation)
 $tagContribRoleId = "4a9ae827-6dc8-4573-8ac7-8239d42aa03f"
 # Reader (allows listing subscriptions under the MG for evaluation scans)
 $readerRoleId     = "acdd72a7-3385-48ef-bd42-f606fba81ae7"
 
-$rolesToAssign = @(
+$mgRolesToAssign = @(
     @{ Name = 'Tag Enforcement Remediation Operator'; DefinitionId = $customRoleFullId; RoleId = $customRoleDefId },
     @{ Name = 'Tag Contributor';                      DefinitionId = "/providers/Microsoft.Authorization/roleDefinitions/$tagContribRoleId"; RoleId = $tagContribRoleId },
     @{ Name = 'Reader';                               DefinitionId = "/providers/Microsoft.Authorization/roleDefinitions/$readerRoleId"; RoleId = $readerRoleId }
 )
 
-$assignmentScopes = @($mgScope) + @($mgSubIds | ForEach-Object { "/subscriptions/$_" })
+$subscriptionRolesToAssign = @(
+    @{ Name = 'Resource Policy Contributor'; DefinitionId = "/providers/Microsoft.Authorization/roleDefinitions/$policyContribRoleId"; RoleId = $policyContribRoleId },
+    @{ Name = 'Tag Contributor';             DefinitionId = "/providers/Microsoft.Authorization/roleDefinitions/$tagContribRoleId"; RoleId = $tagContribRoleId },
+    @{ Name = 'Reader';                      DefinitionId = "/providers/Microsoft.Authorization/roleDefinitions/$readerRoleId"; RoleId = $readerRoleId }
+)
+
+$subscriptionScopes = @($mgSubIds | ForEach-Object { "/subscriptions/$_" })
 
 # Remove stale assignments from prior Automation Account identities.
 # Stale entries commonly show as principalType = Unknown after identity recreation.
 Write-Host "  Cleaning up stale MG-scope role assignments for prior identities..." -ForegroundColor DarkGray
 $roleIdSet = @{}
-foreach ($role in $rolesToAssign) {
+foreach ($role in $mgRolesToAssign) {
     $roleIdSet[$role.RoleId.ToLowerInvariant()] = $true
 }
 
@@ -286,9 +294,36 @@ if ($existingAssignmentsResp.StatusCode -eq 200) {
 
 $roleAssignmentFailures = @()
 
-foreach ($scope in $assignmentScopes) {
-    $scopeLabel = if ($scope -eq $mgScope) { "MG: $MG_ID" } else { "Sub: $($scope -replace '/subscriptions/','')" }
-    foreach ($role in $rolesToAssign) {
+# MG assignments (custom role + tag + reader)
+foreach ($role in $mgRolesToAssign) {
+    $roleAssignmentId = [guid]::NewGuid().ToString()
+    $roleAssignPath = "${mgScope}/providers/Microsoft.Authorization/roleAssignments/${roleAssignmentId}?api-version=2022-04-01"
+    $roleAssignBody = @{
+        properties = @{
+            principalId      = $principalId
+            roleDefinitionId = $role.DefinitionId
+            principalType    = 'ServicePrincipal'
+        }
+    } | ConvertTo-Json -Depth 10
+
+    $roleResp = Invoke-AzRestMethod -Path $roleAssignPath -Method PUT -Payload $roleAssignBody -ErrorAction SilentlyContinue
+    if ($roleResp.StatusCode -ge 200 -and $roleResp.StatusCode -lt 300) {
+        Write-Host "  • [MG: $MG_ID] $($role.Name) — granted." -ForegroundColor Green
+    } elseif ($roleResp.StatusCode -eq 409) {
+        Write-Host "  • [MG: $MG_ID] $($role.Name) — already assigned." -ForegroundColor Green
+    } else {
+        $errContent = $roleResp.Content | ConvertFrom-Json -ErrorAction SilentlyContinue
+        $errMsg = if ($errContent -and $errContent.error) { $errContent.error.message } else { "HTTP $($roleResp.StatusCode)" }
+        $failure = "[MG: $MG_ID] $($role.Name) — $errMsg"
+        $roleAssignmentFailures += $failure
+        Write-Warning "  • $failure"
+    }
+}
+
+# Subscription assignments (RPC + tag + reader) for fallback reliability in Gov
+foreach ($scope in $subscriptionScopes) {
+    $scopeLabel = "Sub: $($scope -replace '/subscriptions/','')"
+    foreach ($role in $subscriptionRolesToAssign) {
         $roleAssignmentId = [guid]::NewGuid().ToString()
         $roleAssignPath = "${scope}/providers/Microsoft.Authorization/roleAssignments/${roleAssignmentId}?api-version=2022-04-01"
         $roleAssignBody = @{
@@ -322,7 +357,7 @@ if ($roleAssignmentFailures.Count -gt 0) {
 $principalAssignments = @(Get-AzRoleAssignment -ObjectId $principalId -Scope $mgScope -ErrorAction SilentlyContinue)
 $assignedRoleNames = @($principalAssignments | Select-Object -ExpandProperty RoleDefinitionName)
 
-$requiredRoleNames = @($rolesToAssign | Select-Object -ExpandProperty Name)
+$requiredRoleNames = @($mgRolesToAssign | Select-Object -ExpandProperty Name)
 $missingRoles = @($requiredRoleNames | Where-Object { $assignedRoleNames -notcontains $_ })
 
 if ($missingRoles.Count -gt 0) {
