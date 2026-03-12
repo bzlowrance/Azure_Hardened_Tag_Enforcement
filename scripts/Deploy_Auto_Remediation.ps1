@@ -52,6 +52,16 @@ $INITIATIVE_NAME = $envVars['INITIATIVE_NAME']
 $ASSIGNMENT_NAME = $envVars['ASSIGNMENT_NAME']
 $locationPref    = $envVars['ASSIGNMENT_LOCATION']
 
+# Normalize management group id to avoid hidden whitespace/formatting artifacts
+$rawMgId = [string]$MG_ID
+$MG_ID = (($rawMgId -replace '\s', '') -replace '[^A-Za-z0-9\-\._\(\)]', '').Trim()
+if ([string]::IsNullOrWhiteSpace($MG_ID)) {
+    Write-Error "MANAGEMENT_GROUP_ID is empty/invalid after normalization. Raw value: '$rawMgId'"
+}
+if ($MG_ID -ne $rawMgId.Trim()) {
+    Write-Warning "MANAGEMENT_GROUP_ID normalized from '$rawMgId' to '$MG_ID'."
+}
+
 $AUTOMATION_ACCOUNT_NAME = $envVars['AUTOMATION_ACCOUNT_NAME']
 $AUTOMATION_RG_NAME      = $envVars['AUTOMATION_RG_NAME']
 $AUTOMATION_SCHEDULE_HR  = $envVars['AUTOMATION_SCHEDULE_HOURS']
@@ -115,6 +125,7 @@ Write-Host "══════════════════════�
 Write-Host " Auto-Remediation Setup" -ForegroundColor Cyan
 Write-Host " Subscription     : $targetSubId" -ForegroundColor Cyan
 Write-Host " Location          : $LOCATION" -ForegroundColor Cyan
+Write-Host " Management Group  : $MG_ID" -ForegroundColor Cyan
 Write-Host " Automation Acct   : $AUTOMATION_ACCOUNT_NAME" -ForegroundColor Cyan
 Write-Host " Resource Group    : $AUTOMATION_RG_NAME" -ForegroundColor Cyan
 Write-Host " Schedule          : Every $scheduleHours hour(s)" -ForegroundColor Cyan
@@ -236,6 +247,8 @@ $rolesToAssign = @(
     @{ Name = 'Reader';                               DefinitionId = "/providers/Microsoft.Authorization/roleDefinitions/$readerRoleId" }
 )
 
+$roleAssignmentFailures = @()
+
 foreach ($role in $rolesToAssign) {
     $roleAssignmentId = [guid]::NewGuid().ToString()
     $roleAssignPath = "${mgScope}/providers/Microsoft.Authorization/roleAssignments/${roleAssignmentId}?api-version=2022-04-01"
@@ -255,9 +268,36 @@ foreach ($role in $rolesToAssign) {
     } else {
         $errContent = $roleResp.Content | ConvertFrom-Json -ErrorAction SilentlyContinue
         $errMsg = if ($errContent -and $errContent.error) { $errContent.error.message } else { "HTTP $($roleResp.StatusCode)" }
-        Write-Warning "  • [MG: $MG_ID] $($role.Name) — $errMsg"
+        $failure = "[MG: $MG_ID] $($role.Name) — $errMsg"
+        $roleAssignmentFailures += $failure
+        Write-Warning "  • $failure"
     }
 }
+
+if ($roleAssignmentFailures.Count -gt 0) {
+    Write-Error "One or more role assignments failed. Resolve RBAC assignment errors before continuing:`n - $($roleAssignmentFailures -join "`n - ")"
+}
+
+# Verify assignments actually exist for this principal at MG scope
+$assignedRolesPath = "${mgScope}/providers/Microsoft.Authorization/roleAssignments?api-version=2022-04-01&`$filter=principalId eq '$principalId'"
+$assignedRolesResp = Invoke-AzRestMethod -Path $assignedRolesPath -Method GET -ErrorAction Stop
+$assignedRoles = @()
+if ($assignedRolesResp.StatusCode -eq 200) {
+    $assignedRoles = @((($assignedRolesResp.Content | ConvertFrom-Json).value | ForEach-Object { $_.properties.roleDefinitionId.ToLowerInvariant() }))
+}
+
+$missingRoles = @()
+foreach ($role in $rolesToAssign) {
+    if (-not ($assignedRoles -contains $role.DefinitionId.ToLowerInvariant())) {
+        $missingRoles += $role.Name
+    }
+}
+
+if ($missingRoles.Count -gt 0) {
+    Write-Error "Managed identity is missing required MG-scope role assignments: $($missingRoles -join ', ')."
+}
+
+Write-Host "  Role assignment verification passed for managed identity at MG scope." -ForegroundColor Green
 
 # ── Step 4: Import Az modules ──────────────────────────
 Write-Host "`n[4/6] Importing required PowerShell modules..." -ForegroundColor Yellow

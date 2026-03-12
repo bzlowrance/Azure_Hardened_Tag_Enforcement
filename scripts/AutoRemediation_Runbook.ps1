@@ -30,11 +30,21 @@ try {
 }
 
 # Read configuration from Automation Account variables
-$mgId            = (Get-AutomationVariable -Name 'ManagementGroupId').Trim()
-$initiativeName  = (Get-AutomationVariable -Name 'InitiativeName').Trim()
-$assignmentName  = (Get-AutomationVariable -Name 'AssignmentName').Trim()
+$rawMgId         = [string](Get-AutomationVariable -Name 'ManagementGroupId')
+$mgId            = ($rawMgId -replace '\s', '').Trim()
+$initiativeName  = ([string](Get-AutomationVariable -Name 'InitiativeName')).Trim()
+$assignmentName  = ([string](Get-AutomationVariable -Name 'AssignmentName')).Trim()
 $sourceVersion   = Get-AutomationVariable -Name 'RunbookSourceVersion' -ErrorAction SilentlyContinue
 $sourceHash      = Get-AutomationVariable -Name 'RunbookSourceHash' -ErrorAction SilentlyContinue
+
+if ([string]::IsNullOrWhiteSpace($mgId)) {
+    Write-Error "ManagementGroupId automation variable is empty after whitespace normalization."
+    throw
+}
+
+if ($mgId -ne $rawMgId.Trim()) {
+    Write-Warning "ManagementGroupId contained whitespace and was normalized from '$rawMgId' to '$mgId'."
+}
 
 $mgScope = "/providers/Microsoft.Management/managementGroups/$mgId"
 $assignmentId = "$mgScope/providers/Microsoft.Authorization/policyAssignments/$assignmentName"
@@ -47,6 +57,36 @@ Write-Output "Initiative       : $initiativeName"
 Write-Output "Assignment       : $assignmentName"
 Write-Output "Runbook Version  : $resolvedSourceVersion"
 Write-Output "Runbook Hash     : $resolvedSourceHash"
+Write-Output "Remediation Scope: [$mgScope]"
+
+# Preflight diagnostics: print caller and effective permissions at MG scope
+try {
+    $ctx = Get-AzContext
+    if ($ctx -and $ctx.Account) {
+        Write-Output "Auth Account ID  : $($ctx.Account.Id)"
+    }
+
+    $permPath = "${mgScope}/providers/Microsoft.Authorization/permissions?api-version=2022-04-01"
+    $permResp = Invoke-AzRestMethod -Path $permPath -Method GET -ErrorAction Stop
+    if ($permResp.StatusCode -eq 200) {
+        $permissions = (($permResp.Content | ConvertFrom-Json).value | ForEach-Object { $_.actions })
+        $hasWritePermission = $false
+        foreach ($actionSet in $permissions) {
+            if ($actionSet -contains '*') { $hasWritePermission = $true; break }
+            if ($actionSet -contains 'Microsoft.PolicyInsights/*') { $hasWritePermission = $true; break }
+            if ($actionSet -contains 'Microsoft.PolicyInsights/remediations/*') { $hasWritePermission = $true; break }
+            if ($actionSet -contains 'Microsoft.PolicyInsights/remediations/write') { $hasWritePermission = $true; break }
+        }
+
+        if ($hasWritePermission) {
+            Write-Output "Permission Check : Microsoft.PolicyInsights/remediations/write = ALLOWED"
+        } else {
+            Write-Warning "Permission Check : Microsoft.PolicyInsights/remediations/write = NOT FOUND"
+        }
+    }
+} catch {
+    Write-Warning "Permission preflight check failed: $($_.Exception.Message)"
+}
 
 # ── Create remediation tasks at management group scope ───
 Write-Output "Starting remediation tasks at MG scope..."
